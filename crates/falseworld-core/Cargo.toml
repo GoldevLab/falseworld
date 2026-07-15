@@ -1,0 +1,10 @@
+[package]
+name = "falseworld-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Procedural meadow core: PCG hash, FBM terrain, grass blade packing (False Earth–inspired, original)."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"] }

@@ -1,0 +1,19 @@
+[package]
+name = "falseworld-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native False World preview — wgpu 30 meadow stress test (False Earth–inspired, original)."
+
+[[bin]]
+name = "falseworld-wgpu"
+path = "src/main.rs"
+
+[dependencies]
+falseworld-core = { path = "../falseworld-core" }
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"

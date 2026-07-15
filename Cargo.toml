@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [".", "crates/falseworld-core", "crates/falseworld-wgpu"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package]
+name = "falseworld"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "False World — Resuma + WebGPU procedural meadow (False Earth–inspired). Workers bake FBM terrain + grass; browser renders; native wgpu binary for stress tests."
+repository = "https://github.com/GoldevLab/falseworld"
+
+[[bin]]
+name = "falseworld"
+path = "src/main.rs"
+
+[dependencies]
+falseworld-core = { path = "crates/falseworld-core" }
+resuma = { path = "../resuma/crates/resuma", version = "1.2.15" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
