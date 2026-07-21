@@ -42,19 +42,22 @@ rsync -a --delete \
 mkdir -p "$CTX/falseworld/crates/falseworld-wgpu"
 cp -a "$ROOT/crates/falseworld-wgpu/Cargo.toml" "$CTX/falseworld/crates/falseworld-wgpu/"
 
-rsync -a --delete \
-  --exclude target --exclude examples --exclude docs --exclude website \
-  --exclude .git --exclude .github --exclude node_modules \
-  "$APPS/resuma/Cargo.toml" "$APPS/resuma/Cargo.lock" "$APPS/resuma/README.md" "$CTX/resuma/" 2>/dev/null || true
 cp -a "$APPS/resuma/Cargo.toml" "$CTX/resuma/"
-cp -a "$APPS/resuma/Cargo.lock" "$CTX/resuma/" 2>/dev/null || true
-cp -a "$APPS/resuma/README.md" "$CTX/resuma/" 2>/dev/null || true
+if [[ -f "$APPS/resuma/Cargo.lock" ]]; then
+  cp -a "$APPS/resuma/Cargo.lock" "$CTX/resuma/"
+elif command -v cargo >/dev/null 2>&1; then
+  echo "==> Generando resuma/Cargo.lock (no está en el repo)"
+  (cd "$APPS/resuma" && cargo generate-lockfile)
+  cp -a "$APPS/resuma/Cargo.lock" "$CTX/resuma/"
+fi
+cp -a "$APPS/resuma/README.md" "$CTX/resuma/" 2>/dev/null || printf '# resuma\n' > "$CTX/resuma/README.md"
 rsync -a --delete --exclude target "$APPS/resuma/crates/resuma-macros/" "$CTX/resuma/crates/resuma-macros/"
 rsync -a --delete --exclude target "$APPS/resuma/crates/resuma/" "$CTX/resuma/crates/resuma/"
 rsync -a --delete "$APPS/resuma/client-sdk/" "$CTX/resuma/client-sdk/" 2>/dev/null || mkdir -p "$CTX/resuma/client-sdk"
 
 cp -f "$ROOT/Dockerfile" "$CTX/Dockerfile"
 cp -f "$ROOT/fly.toml" "$CTX/fly.toml"
+cp -f "$ROOT/.dockerignore" "$CTX/.dockerignore"
 
 echo "==> App $APP"
 if ! "${FLY[@]}" status -a "$APP" >/dev/null 2>&1; then

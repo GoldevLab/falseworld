@@ -7,7 +7,7 @@
 FROM rust:1.91-bookworm AS builder
 WORKDIR /workspace
 
-COPY resuma/Cargo.toml resuma/Cargo.lock resuma/README.md ./resuma/
+COPY resuma/Cargo.toml resuma/README.md ./resuma/
 COPY resuma/crates/resuma-macros ./resuma/crates/resuma-macros
 COPY resuma/crates/resuma ./resuma/crates/resuma
 COPY resuma/client-sdk ./resuma/client-sdk
