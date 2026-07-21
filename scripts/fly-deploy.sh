@@ -8,13 +8,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APPS="$(cd "$ROOT/.." && pwd)"
 CTX="$ROOT/.fly-context"
 
-if ! command -v fly >/dev/null 2>&1; then
+# Local installs expose `fly`; GitHub Actions setup-flyctl exposes `flyctl`.
+if command -v fly >/dev/null 2>&1; then
+  FLY=(fly)
+elif command -v flyctl >/dev/null 2>&1; then
+  FLY=(flyctl)
+else
   echo "Instala flyctl: https://fly.io/docs/hands-on/install-flyctl/"
   exit 1
 fi
 
-if ! fly auth whoami >/dev/null 2>&1; then
-  echo "Ejecuta: fly auth login"
+if ! "${FLY[@]}" auth whoami >/dev/null 2>&1; then
+  echo "Ejecuta: fly auth login (o define FLY_API_TOKEN)"
   exit 1
 fi
 
@@ -52,14 +57,14 @@ cp -f "$ROOT/Dockerfile" "$CTX/Dockerfile"
 cp -f "$ROOT/fly.toml" "$CTX/fly.toml"
 
 echo "==> App $APP"
-if ! fly status -a "$APP" >/dev/null 2>&1; then
+if ! "${FLY[@]}" status -a "$APP" >/dev/null 2>&1; then
   echo "    Creando app…"
-  fly apps create "$APP" --org personal
+  "${FLY[@]}" apps create "$APP" --org personal
 fi
 
 echo "==> Deploy"
 cd "$CTX"
-fly deploy . --config fly.toml --dockerfile Dockerfile --app "$APP" "$@"
+"${FLY[@]}" deploy . --config fly.toml --dockerfile Dockerfile --app "$APP" "$@"
 
 echo ""
 echo "Listo: https://${APP}.fly.dev/"
