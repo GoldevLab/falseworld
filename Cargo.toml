@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 falseworld-core = { path = "crates/falseworld-core" }
-resuma = { path = "../resuma/crates/resuma", version = "1.2.15" }
+resuma = { path = "../resuma/crates/resuma", version = "1.2.16" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
