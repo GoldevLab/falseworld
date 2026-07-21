@@ -24,6 +24,10 @@ jobs:
           ref: v1.2.16
           path: resuma
 
+      - name: Verify essential VRM / Mixamo assets
+        working-directory: falseworld
+        run: node scripts/check-essential-assets.mjs
+
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy to Fly.io

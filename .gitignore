@@ -6,8 +6,13 @@
 dist/
 node_modules/
 .fly-context/
-# Local VRM/Mixamo copies from vrmedia (large; keep out of git)
+# Large local copies — ship only the essentials used by the meadow VRM layer
 public/avatars/*.vrm
+!public/avatars/sophia.vrm
 public/animaciones/*.fbx
+!public/animaciones/StandingIdle.fbx
+!public/animaciones/Walking.fbx
+!public/animaciones/FastRun.fbx
 # Optional: large local vendor (can re-copy from vrmedia node_modules)
 # public/vendor/
+.resuma/

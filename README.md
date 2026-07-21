@@ -14,12 +14,12 @@ asdasdasda
 
 El meadow es **WebGPU**; el personaje es una **capa WebGL** con el mismo stack que [VRMedia](../vrmedia): Three.js + `@pixiv/three-vrm` + retarget Mixamo.
 
-Assets (symlinks locales, no van al repo remoto por tamaño/licencia de vrmedia):
+Assets (tracked essentials for production; see `.gitignore` allowlist):
 
-- `/avatars/sophia.vrm` → `vrmedia/.../avatar1.vrm`
-- `/animaciones/Standing Idle.fbx`, `/animaciones/Walking.fbx`
+- `/avatars/sophia.vrm`
+- `/animaciones/StandingIdle.fbx`, `/animaciones/Walking.fbx`, `/animaciones/FastRun.fbx`
 
-Cambia el VRM dejando otro `.vrm` en `public/avatars/` y ajustando la URL en `falseworld-vrm.js`.
+Cambia el VRM dejando otro `.vrm` en `public/avatars/` (y añádelo al allowlist) y ajustando la URL en el client VRM.
 
 ## Run (web)
 
