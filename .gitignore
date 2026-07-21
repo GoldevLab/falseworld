@@ -5,3 +5,9 @@
 .DS_Store
 dist/
 node_modules/
+.fly-context/
+# Local VRM/Mixamo copies from vrmedia (large; keep out of git)
+public/avatars/*.vrm
+public/animaciones/*.fbx
+# Optional: large local vendor (can re-copy from vrmedia node_modules)
+# public/vendor/

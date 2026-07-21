@@ -1,0 +1,26 @@
+{
+  "edges": [],
+  "id": "g_2ce4e4813432255fec1e08fea8a7f7b1",
+  "intent": "bake falseworld meadow chunk (FBM + grass)",
+  "nodes": [
+    {
+      "duration_ms": 1784480540472,
+      "id": "worker",
+      "kind": "worker",
+      "label": "generate_falseworld_chunk",
+      "status": "done"
+    }
+  ],
+  "plan": {
+    "chunks": 1,
+    "estimated_cost": "low",
+    "parallel": false,
+    "runtime": "auto",
+    "strategy": "single",
+    "tools": [],
+    "use_ai": false
+  },
+  "progress": 99,
+  "status": "done",
+  "worker": "generate_falseworld_chunk"
+}

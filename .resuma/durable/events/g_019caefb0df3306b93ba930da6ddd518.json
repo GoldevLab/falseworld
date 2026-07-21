@@ -1,0 +1,103 @@
+[
+  {
+    "kind": "worker",
+    "node": "worker",
+    "timestamp_ms": 1784501313710,
+    "type": "node_start"
+  },
+  {
+    "message": "execution started",
+    "node": "worker",
+    "timestamp_ms": 1784501313710,
+    "type": "log"
+  },
+  {
+    "message": "chunk bake started",
+    "node": "worker",
+    "timestamp_ms": 1784501313710,
+    "type": "log"
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501313710,
+    "type": "progress",
+    "value": 5
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501313815,
+    "type": "progress",
+    "value": 8
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501313930,
+    "type": "progress",
+    "value": 13
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314046,
+    "type": "progress",
+    "value": 17
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314161,
+    "type": "progress",
+    "value": 21
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314271,
+    "type": "progress",
+    "value": 26
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314384,
+    "type": "progress",
+    "value": 30
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314499,
+    "type": "progress",
+    "value": 35
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314612,
+    "type": "progress",
+    "value": 39
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314725,
+    "type": "progress",
+    "value": 43
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784501314756,
+    "type": "progress",
+    "value": 100
+  },
+  {
+    "data": {
+      "artifact_id": "a_f4ab9a9ca7e85c971de2a41d",
+      "blades": 0,
+      "bytes": 1048624,
+      "content_type": "application/x-falseworld-chunk",
+      "height_res": 512
+    },
+    "timestamp_ms": 1784501314764,
+    "type": "result"
+  },
+  {
+    "duration_ms": 1054,
+    "node": "worker",
+    "timestamp_ms": 1784501314764,
+    "type": "node_done"
+  }
+]

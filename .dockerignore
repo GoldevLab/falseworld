@@ -1,0 +1,25 @@
+# Used when build context is the parent `apps/` directory.
+**/target/
+**/.git/
+**/.resuma/
+**/.cursor/
+**/.env
+**/.env.*
+**/node_modules/
+**/*.swp
+**/.DS_Store
+
+# Huge / unused for the web image
+resuma/examples/
+resuma/docs/
+resuma/website/
+resuma/.github/
+resuma/target/
+falseworld/target/
+falseworld/.resuma/
+falseworld/**/_debug*.png
+falseworld/**/fw-test*.png
+falseworld/**/shot-*.png
+
+# Native wgpu stress sources (stubbed in Dockerfile)
+falseworld/crates/falseworld-wgpu/src/

@@ -53,10 +53,11 @@ pub fn pack_blade_field(
                 (iz / 4) as i32,
             );
             let kind = (blade_seed * 3.0).floor().clamp(0.0, 2.0);
-            let height = 0.45 + blade_seed * 0.85 + clump * 0.25;
-            let width = 0.04 + (1.0 - blade_seed) * 0.05;
-            let bend = 0.15 + clump * 0.35;
-            let wind = 0.4 + blade_seed * 0.6;
+            // False Earth–style: height ~0.4–0.85, thin strips
+            let height = 0.40 + blade_seed * 0.35 + clump * 0.12;
+            let width = 0.010 + (1.0 - blade_seed) * 0.022;
+            let bend = 0.22 + clump * 0.40 + blade_seed * 0.12;
+            let wind = 0.40 + blade_seed * 0.50;
             let ang = blade_seed * std::f32::consts::TAU;
 
             out.push(BladePacked {

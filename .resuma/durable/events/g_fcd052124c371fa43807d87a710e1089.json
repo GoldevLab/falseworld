@@ -1,0 +1,49 @@
+[
+  {
+    "kind": "worker",
+    "node": "worker",
+    "timestamp_ms": 1784412725638,
+    "type": "node_start"
+  },
+  {
+    "message": "execution started",
+    "node": "worker",
+    "timestamp_ms": 1784412725638,
+    "type": "log"
+  },
+  {
+    "message": "chunk bake started",
+    "node": "worker",
+    "timestamp_ms": 1784412725638,
+    "type": "log"
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784412725638,
+    "type": "progress",
+    "value": 5
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784412725644,
+    "type": "progress",
+    "value": 100
+  },
+  {
+    "data": {
+      "artifact_id": "a_999b77b52b71deb74ab3aee1",
+      "blades": 0,
+      "bytes": 102448,
+      "content_type": "application/x-falseworld-chunk",
+      "height_res": 160
+    },
+    "timestamp_ms": 1784412725646,
+    "type": "result"
+  },
+  {
+    "duration_ms": 8,
+    "node": "worker",
+    "timestamp_ms": 1784412725646,
+    "type": "node_done"
+  }
+]

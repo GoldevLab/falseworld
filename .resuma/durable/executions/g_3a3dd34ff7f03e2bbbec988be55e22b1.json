@@ -1,0 +1,31 @@
+{
+  "cancelled": false,
+  "graph_id": "g_3a3dd34ff7f03e2bbbec988be55e22b1",
+  "input": {
+    "area": 160.0,
+    "blades_per_axis": 0,
+    "height_res": 192,
+    "origin_x": 335.625,
+    "origin_z": 290.15625,
+    "seed": 42,
+    "terrain_amp": 0.550000011920929,
+    "terrain_freq": 0.02199999988079071
+  },
+  "paused": false,
+  "plan": {
+    "chunks": 1,
+    "estimated_cost": "low",
+    "parallel": false,
+    "runtime": "auto",
+    "strategy": "single",
+    "tools": [],
+    "use_ai": false
+  },
+  "profile": {
+    "memory_mb": 256,
+    "parallel_limit": 4,
+    "runtime": "browser",
+    "timeout_secs": 0
+  },
+  "worker": "generate_falseworld_chunk"
+}

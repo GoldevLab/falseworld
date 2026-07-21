@@ -2,15 +2,19 @@
 //! Patterns inspired by https://github.com/momentchan/false-earth (credit Ming-Jyun Hung);
 //! all code original.
 
+mod biome;
 mod codec;
 mod grass;
 mod noise;
 mod pcg;
 mod terrain;
 
+pub use biome::{biome_at, coast_radius, snow_weight, Biome, CENTER_MTN_R, ISLAND_HALF};
 pub use codec::{decode_chunk, encode_chunk, CONTENT_TYPE};
 pub use grass::{BladePacked, GrassParams};
-pub use terrain::{terrain_height, terrain_normal, TerrainParams};
+pub use terrain::{
+    center_mountain, cordillera, rolling_hills, terrain_height, terrain_normal, TerrainParams,
+};
 
 use grass::pack_blade_field;
 use serde::{Deserialize, Serialize};
@@ -47,11 +51,11 @@ impl Default for ChunkRequest {
             seed: 42,
             origin_x: 0.0,
             origin_z: 0.0,
-            area: 48.0,
+            area: 64.0,
             height_res: 96,
-            blades_per_axis: 96,
-            terrain_amp: 2.4,
-            terrain_freq: 0.045,
+            blades_per_axis: 128,
+            terrain_amp: 1.8,
+            terrain_freq: 0.04,
         }
     }
 }
@@ -62,8 +66,9 @@ pub fn generate_chunk(req: &ChunkRequest, progress: &dyn Fn(u8)) -> SurfaceChunk
         frequency: req.terrain_freq,
         seed: req.seed,
     };
-    let res = req.height_res.clamp(16, 256) as usize;
-    let area = req.area.clamp(8.0, 200.0);
+    // Full island ≈ 2×ISLAND_HALF (~0.6 km with coastline warp); allow one-shot bake.
+    let res = req.height_res.clamp(16, 512) as usize;
+    let area = req.area.clamp(8.0, 2600.0);
     progress(5);
 
     let mut heights = vec![0.0f32; res * res];
@@ -81,12 +86,18 @@ pub fn generate_chunk(req: &ChunkRequest, progress: &dyn Fn(u8)) -> SurfaceChunk
     }
     progress(50);
 
-    let grass = GrassParams {
-        area,
-        blades_per_axis: req.blades_per_axis.clamp(8, 512),
-        seed: req.seed ^ 0xA55_A55,
+    // blades_per_axis == 0 → heightmap only; browser WebGPU fills ~1M blades (FE density).
+    let blades = if req.blades_per_axis == 0 {
+        progress(95);
+        Vec::new()
+    } else {
+        let grass = GrassParams {
+            area,
+            blades_per_axis: req.blades_per_axis.clamp(8, 1024),
+            seed: req.seed ^ 0xA55_A55,
+        };
+        pack_blade_field(req.origin_x, req.origin_z, &grass, &terrain, progress)
     };
-    let blades = pack_blade_field(req.origin_x, req.origin_z, &grass, &terrain, progress);
 
     progress(100);
     SurfaceChunk {

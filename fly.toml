@@ -1,0 +1,38 @@
+# fly.toml — False World (Resuma + WebGPU meadow)
+# Deploy: ./scripts/fly-deploy.sh
+
+app = 'falseworld'
+primary_region = 'gru'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  strategy = 'rolling'
+
+[env]
+  RESUMA_ENV = 'production'
+  RESUMA_ADDR = '0.0.0.0:8080'
+  RESUMA_TRUST_PROXY = '1'
+  RESUMA_TRUSTED_PROXY_CIDRS = 'fdaa::/16'
+  RESUMA_PUBLIC_DIR = '/app/public'
+  RESUMA_PAGES_ROOT = '/app/pages'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [[http_service.checks]]
+    grace_period = '25s'
+    interval = '15s'
+    method = 'GET'
+    timeout = '5s'
+    path = '/health'
+
+[[vm]]
+  size = 'shared-cpu-2x'
+  memory = '1gb'

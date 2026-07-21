@@ -9,7 +9,9 @@ struct Frame {
   sun_dir : vec3f,
   time : f32,
   eye : vec3f,
-  _pad : f32,
+  _pad0 : f32,
+  player : vec3f,
+  push_r : f32,
 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 
@@ -32,16 +34,13 @@ struct TerrainOut {
 }
 
 @fragment fn fs_terrain(input : TerrainOut) -> @location(0) vec4f {
+  // False Earth terrain is flat black under dense grass
   let n = normalize(input.nrm);
   let L = normalize(-frame.sun_dir);
   let ndl = max(dot(n, L), 0.0);
-  let heightTint = smoothstep(-0.4, 2.2, input.world.y);
-  var col = mix(vec3f(0.18, 0.28, 0.12), vec3f(0.42, 0.62, 0.28), heightTint);
-  col = mix(col, vec3f(0.55, 0.52, 0.38), smoothstep(1.6, 2.8, input.world.y) * 0.35);
-  let shade = 0.28 + ndl * 0.72;
-  let grid = abs(fract(input.world.x * 0.25) - 0.5) * abs(fract(input.world.z * 0.25) - 0.5);
-  col += step(0.46, grid) * 0.04;
-  return vec4f(col * shade, 1.0);
+  var col = vec3f(0.02, 0.025, 0.03);
+  col *= 0.35 + ndl * 0.25;
+  return vec4f(col, 1.0);
 }
 
 struct Blade {
@@ -55,7 +54,13 @@ struct GrassOut {
   @location(0) world : vec3f,
   @location(1) color : vec3f,
   @location(2) nrm : vec3f,
+  @location(3) height_t : f32,
 };
+
+fn bezier3(a : vec3f, b : vec3f, c : vec3f, d : vec3f, t : f32) -> vec3f {
+  let u = 1.0 - t;
+  return a*u*u*u + b*3.0*u*u*t + c*3.0*u*t*t + d*t*t*t;
+}
 
 @vertex fn vs_grass(
   @builtin(vertex_index) vid : u32,
@@ -68,32 +73,84 @@ struct GrassOut {
   let wind = blade.data1.w;
   let s = blade.data2.x;
   let c = blade.data2.y;
+  let clump = blade.data2.z;
   let seed = blade.data2.w;
   let nxz = blade.data3.xy;
 
   let side = f32(vid % 2u) * 2.0 - 1.0;
-  let up = f32(vid / 2u) / 3.0;
-  let taper = 1.0 - up * 0.85;
+  let up = f32(vid / 2u) / 7.0;
+  let taper = mix(1.0, 0.12, up * up);
+
+  let sway = sin(frame.time * (1.1 + wind) + seed * 6.28318) * bend * 0.55;
+  let tipPush = vec3f(sway * c, 0.0, sway * s);
+
+  // Character push (flatten / lean away)
+  var push = vec3f(0.0);
+  let toBlade = pos.xz - frame.player.xz;
+  let dist = length(toBlade);
+  if (dist < frame.push_r && dist > 1e-4) {
+    let fall = 1.0 - dist / frame.push_r;
+    let dir = normalize(toBlade);
+    push = vec3f(dir.x, 0.0, dir.y) * fall * fall * 0.55 * up;
+  }
+
+  let p0 = vec3f(0.0, 0.0, 0.0);
+  let p1 = vec3f(0.0, height * 0.35, bend * 0.15);
+  let p2 = tipPush * 0.45 + vec3f(0.0, height * 0.7, bend * 0.55);
+  let p3 = tipPush + vec3f(0.0, height, bend * 0.2);
+  let along = bezier3(p0, p1, p2, p3, up);
   let localX = side * width * 0.5 * taper;
-  let localY = up * height;
-  let sway = sin(frame.time * (1.4 + wind) + seed * 6.28318) * bend * up * up;
-  let lx = localX * c - sway * s;
-  let lz = localX * s + sway * c;
+  let lx = localX * c;
+  let lz = localX * s;
+  var world = pos + vec3f(lx + along.x, along.y, lz + along.z) + push;
 
   var o : GrassOut;
-  o.world = pos + vec3f(lx, localY, lz);
-  o.clip = frame.view_proj * vec4f(o.world, 1.0);
-  let tip = mix(vec3f(0.22, 0.48, 0.16), vec3f(0.62, 0.82, 0.32), up);
-  let dry = mix(tip, vec3f(0.55, 0.5, 0.22), seed * 0.25);
-  o.color = dry;
-  o.nrm = normalize(vec3f(nxz.x, 0.75, nxz.y));
+  o.world = world;
+  o.clip = frame.view_proj * vec4f(world, 1.0);
+  // base #000 → tip #2e698c (False Earth tip preset)
+  let baseCol = vec3f(0.02, 0.03, 0.04);
+  let tipCol = vec3f(0.18, 0.41, 0.55);
+  var col = mix(baseCol, tipCol, pow(up, 0.65));
+  col *= mix(0.92, 1.08, clump);
+  col *= mix(0.95, 1.05, seed);
+  o.color = col;
+  o.nrm = normalize(vec3f(nxz.x + push.x, 0.65, nxz.y + push.z));
+  o.height_t = up;
   return o;
 }
 
 @fragment fn fs_grass(input : GrassOut) -> @location(0) vec4f {
+  let n = normalize(input.nrm);
   let L = normalize(-frame.sun_dir);
-  let ndl = max(dot(normalize(input.nrm), L), 0.15);
-  return vec4f(input.color * (0.35 + ndl * 0.75), 1.0);
+  let V = normalize(frame.eye - input.world);
+  let ndl = max(dot(n, L), 0.08);
+  let h = normalize(L + V);
+  let spec = pow(max(dot(n, h), 0.0), 64.0) * 0.55 * input.height_t;
+  // metallic midnight grass
+  let shade = 0.22 + ndl * 0.78;
+  var rgb = input.color * shade + vec3f(spec * 0.75, spec * 0.9, spec);
+  rgb += input.color * pow(input.height_t, 3.0) * 0.08;
+  return vec4f(clamp(rgb, vec3f(0.0), vec3f(1.6)), 1.0);
+}
+
+struct StarIn {
+  @location(0) dir : vec3f,
+  @location(1) bright : f32,
+};
+struct StarOut {
+  @builtin(position) clip : vec4f,
+  @location(0) bright : f32,
+};
+@vertex fn vs_star(input : StarIn) -> StarOut {
+  var o : StarOut;
+  let far = frame.eye + normalize(input.dir) * 80.0;
+  o.clip = frame.view_proj * vec4f(far, 1.0);
+  o.clip.z = o.clip.w * 0.999;
+  o.bright = input.bright;
+  return o;
+}
+@fragment fn fs_star(input : StarOut) -> @location(0) vec4f {
+  return vec4f(vec3f(0.75, 0.82, 1.0) * input.bright, 1.0);
 }
 `;
 
@@ -323,7 +380,7 @@ struct GrassOut {
 
     const module = device.createShaderModule({ code: WGSL });
     const frameBuf = device.createBuffer({
-      size: 96,
+      size: 128,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const bindGroupLayout = device.createBindGroupLayout({
@@ -386,6 +443,52 @@ struct GrassOut {
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
 
+    // Procedural starfield (False Earth night sky feel)
+    const STAR_N = 2500;
+    const starData = new Float32Array(STAR_N * 4);
+    for (let i = 0; i < STAR_N; i++) {
+      const u = Math.random() * Math.PI * 2;
+      const v = Math.acos(2 * Math.random() - 1);
+      starData[i * 4] = Math.sin(v) * Math.cos(u);
+      starData[i * 4 + 1] = Math.cos(v);
+      starData[i * 4 + 2] = Math.sin(v) * Math.sin(u);
+      starData[i * 4 + 3] = 0.25 + Math.random() * 0.75;
+    }
+    const starVbo = device.createBuffer({
+      size: starData.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Float32Array(starVbo.getMappedRange()).set(starData);
+    starVbo.unmap();
+    const starPipe = device.createRenderPipeline({
+      layout: pipelineLayout,
+      vertex: {
+        module,
+        entryPoint: "vs_star",
+        buffers: [
+          {
+            arrayStride: 16,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: "float32x3" },
+              { shaderLocation: 1, offset: 12, format: "float32" },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module,
+        entryPoint: "fs_star",
+        targets: [{ format }],
+      },
+      primitive: { topology: "point-list" },
+      depthStencil: {
+        format: "depth24plus",
+        depthWriteEnabled: false,
+        depthCompare: "less",
+      },
+    });
+
     let terrainVbo = null;
     let terrainIbo = null;
     let terrainIndexCount = 0;
@@ -394,7 +497,7 @@ struct GrassOut {
     let chunk = null;
     let baking = false;
 
-    const player = { x: 0, y: 1.6, z: 0, yaw: 0 };
+    const player = { x: 0, y: 1.55, feetY: 0, z: 0, yaw: 0, moving: false };
     let camMode = "follow";
     const keys = Object.create(null);
     let orbitYaw = 0.4;
@@ -406,6 +509,8 @@ struct GrassOut {
     let alive = true;
     let raf = 0;
     let t0 = performance.now();
+    let lastEye = [0, 2, 8];
+    let lastTarget = [0, 1, 0];
 
     function uploadChunk(meta) {
       const bytes = b64ToBytes(meta.fwch_b64);
@@ -438,7 +543,8 @@ struct GrassOut {
       new Float32Array(grassVbo.getMappedRange()).set(chunk.blades);
       grassVbo.unmap();
       grassCount = chunk.bladeCount;
-      player.y = sampleHeight(chunk, player.x, player.z) + 1.55;
+      player.feetY = sampleHeight(chunk, player.x, player.z);
+      player.y = player.feetY + 1.55;
       onHud({ blades: grassCount, status: "Listo · " + grassCount + " blades" });
     }
 
@@ -471,7 +577,7 @@ struct GrassOut {
         bakeAt(0, 0);
         return;
       }
-      const [ox, oz] = snapOrigin(player.x, player.z, chunk.area, 80);
+      const [ox, oz] = snapOrigin(player.x, player.z, chunk.area, 128);
       bakeAt(ox, oz);
     }
 
@@ -533,7 +639,8 @@ struct GrassOut {
       if (keys.KeyS || keys.ArrowDown) mz += 1;
       if (keys.KeyA || keys.ArrowLeft) mx -= 1;
       if (keys.KeyD || keys.ArrowRight) mx += 1;
-      if (mx || mz) {
+      player.moving = !!(mx || mz);
+      if (player.moving) {
         const len = Math.hypot(mx, mz) || 1;
         mx /= len;
         mz /= len;
@@ -543,14 +650,15 @@ struct GrassOut {
         player.x += (mx * c + mz * s) * speed * dt;
         player.z += (-mx * s + mz * c) * speed * dt;
       }
-      player.y = sampleHeight(chunk, player.x, player.z) + 1.55;
+      player.feetY = sampleHeight(chunk, player.x, player.z);
+      player.y = player.feetY + 1.55;
 
       const half = chunk.area * 0.42;
       if (
         Math.abs(player.x - chunk.origin_x) > half ||
         Math.abs(player.z - chunk.origin_z) > half
       ) {
-        const [ox, oz] = snapOrigin(player.x, player.z, chunk.area, 80);
+        const [ox, oz] = snapOrigin(player.x, player.z, chunk.area, 128);
         if (
           Math.abs(ox - chunk.origin_x) > 0.01 ||
           Math.abs(oz - chunk.origin_z) > 0.01
@@ -588,7 +696,24 @@ struct GrassOut {
         target = [player.x, player.y - 0.2, player.z];
       }
       const view = mat4LookAt(eye, target, [0, 1, 0]);
+      lastEye = eye;
+      lastTarget = target;
       return { mvp: mat4Mul(proj, view), eye };
+    }
+
+    function getPose() {
+      return {
+        x: player.x,
+        y: player.feetY,
+        z: player.z,
+        yaw: player.yaw,
+        moving: player.moving,
+        camMode,
+        eye: lastEye,
+        target: lastTarget,
+        aspect: size.w / Math.max(1, size.h),
+        fovDeg: 55,
+      };
     }
 
     function frame() {
@@ -599,15 +724,21 @@ struct GrassOut {
       update(dt);
 
       const { mvp, eye } = cameraMatrices();
-      const ubo = new Float32Array(24);
+      const ubo = new Float32Array(32);
       ubo.set(mvp, 0);
-      ubo[16] = -0.35;
-      ubo[17] = -0.85;
-      ubo[18] = -0.25;
+      // cool moonlight (False Earth night)
+      ubo[16] = -0.25;
+      ubo[17] = -0.9;
+      ubo[18] = -0.15;
       ubo[19] = now * 0.001;
       ubo[20] = eye[0];
       ubo[21] = eye[1];
       ubo[22] = eye[2];
+      ubo[23] = 0;
+      ubo[24] = player.x;
+      ubo[25] = player.feetY;
+      ubo[26] = player.z;
+      ubo[27] = 1.1;
       device.queue.writeBuffer(frameBuf, 0, ubo);
 
       const encoder = device.createCommandEncoder();
@@ -615,7 +746,7 @@ struct GrassOut {
         colorAttachments: [
           {
             view: context.getCurrentTexture().createView(),
-            clearValue: { r: 0.42, g: 0.62, b: 0.78, a: 1 },
+            clearValue: { r: 0.01, g: 0.012, b: 0.02, a: 1 },
             loadOp: "clear",
             storeOp: "store",
           },
@@ -628,6 +759,9 @@ struct GrassOut {
         },
       });
       pass.setBindGroup(0, bindGroup);
+      pass.setPipeline(starPipe);
+      pass.setVertexBuffer(0, starVbo);
+      pass.draw(STAR_N);
       if (terrainVbo && terrainIbo) {
         pass.setPipeline(terrainPipe);
         pass.setVertexBuffer(0, terrainVbo);
@@ -637,7 +771,7 @@ struct GrassOut {
       if (grassVbo && grassCount > 0) {
         pass.setPipeline(grassPipe);
         pass.setVertexBuffer(0, grassVbo);
-        pass.draw(8, grassCount);
+        pass.draw(16, grassCount);
       }
       pass.end();
       device.queue.submit([encoder.finish()]);
@@ -659,7 +793,7 @@ struct GrassOut {
       } catch (_) {}
     }
 
-    return { boot, destroy, setCameraMode, rebake };
+    return { boot, destroy, setCameraMode, rebake, getPose };
   }
 
   window.FalseWorldGpu = { create };

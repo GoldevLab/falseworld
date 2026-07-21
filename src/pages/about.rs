@@ -24,8 +24,14 @@ pub fn page(_req: FlowRequest) -> View {
             <ul>
                 <li>"falseworld-core — noise, terrain, grass, FWCH codec"</li>
                 <li>"falseworld (Resuma Flow) — start/claim chunk workers"</li>
+                <li>"Cliente WebGPU — meadow; capa VRM — Three.js + @pixiv/three-vrm (como VRMedia)"</li>
                 <li>"falseworld-wgpu — preview nativo wgpu 30"</li>
             </ul>
+            <p>
+                "Avatar local: symlink a "
+                <code>"vrmedia/public/avatars/female/avatar1.vrm"</code>
+                " (Sophia) + animaciones Mixamo Idle/Walk."
+            </p>
         </article>
     }
 }

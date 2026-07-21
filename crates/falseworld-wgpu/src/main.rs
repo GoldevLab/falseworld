@@ -1,7 +1,12 @@
 //! Native False World — bake chunk in Rust, render heightmap + grass with wgpu 30.
 //! API aligned with https://docs.rs/wgpu/latest/wgpu/ (False Earth–inspired, original).
+//! AAA scaffolding: see `engine` + repo `ENGINE.md` (web playable / native fidelity).
+
+mod engine;
 
 use std::sync::Arc;
+
+use engine::{aaa_pass_order, EngineFeatures};
 
 use bytemuck::{Pod, Zeroable};
 use falseworld_core::{generate_chunk, ChunkRequest};
@@ -19,8 +24,23 @@ struct Frame {
     view_proj: mat4x4f,
     sun_dir: vec3f,
     time: f32,
+    light_col: vec3f,
+    amb: f32,
+    eye: vec3f,
+    tod: f32,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
+
+fn aces(x: vec3f) -> vec3f {
+    return clamp(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14), vec3f(0.0), vec3f(1.0));
+}
+fn apply_fog(rgb: vec3f, world: vec3f) -> vec3f {
+    let dist = length(world.xz - frame.eye.xz);
+    let fog = smoothstep(35.0, 95.0, dist);
+    let night = smoothstep(0.35, 0.75, abs(frame.tod - 0.5) * 2.0);
+    let fog_c = mix(vec3f(0.55, 0.68, 0.82), vec3f(0.08, 0.10, 0.18), night);
+    return mix(rgb, fog_c, fog * 0.55);
+}
 
 struct Vin {
     @location(0) pos: vec3f,
@@ -40,10 +60,14 @@ struct Vout {
 }
 @fragment fn fs_terrain(i: Vout) -> @location(0) vec4f {
     let n = normalize(i.nrm);
-    let ndl = max(dot(n, normalize(-frame.sun_dir)), 0.0);
+    let L = normalize(-frame.sun_dir);
+    let ndl = max(dot(n, L), 0.0);
+    let hemi = 0.22 + 0.35 * max(n.y, 0.0);
     let tint = smoothstep(-0.2, 2.0, i.world.y);
     var col = mix(vec3f(0.16, 0.26, 0.12), vec3f(0.4, 0.6, 0.28), tint);
-    return vec4f(col * (0.3 + ndl * 0.7), 1.0);
+    var rgb = col * (frame.amb + hemi * 0.45 + ndl * 0.7) * frame.light_col;
+    rgb = apply_fog(rgb, i.world);
+    return vec4f(aces(rgb), 1.0);
 }
 
 struct Blade {
@@ -56,6 +80,7 @@ struct Gout {
     @builtin(position) clip: vec4f,
     @location(0) color: vec3f,
     @location(1) nrm: vec3f,
+    @location(2) world: vec3f,
 };
 @vertex fn vs_grass(@builtin(vertex_index) vid: u32, b: Blade) -> Gout {
     let pos = b.data0.xyz;
@@ -78,11 +103,17 @@ struct Gout {
     o.clip = frame.view_proj * vec4f(world, 1.0);
     o.color = mix(vec3f(0.2, 0.45, 0.15), vec3f(0.6, 0.8, 0.3), up);
     o.nrm = normalize(vec3f(b.data3.x, 0.75, b.data3.y));
+    o.world = world;
     return o;
 }
 @fragment fn fs_grass(i: Gout) -> @location(0) vec4f {
-    let ndl = max(dot(normalize(i.nrm), normalize(-frame.sun_dir)), 0.15);
-    return vec4f(i.color * (0.35 + ndl * 0.75), 1.0);
+    let n = normalize(i.nrm);
+    let L = normalize(-frame.sun_dir);
+    let ndl = max(dot(n, L), 0.12);
+    let hemi = 0.2 + 0.3 * max(n.y, 0.0);
+    var rgb = i.color * (frame.amb + hemi * 0.4 + ndl * 0.65) * frame.light_col;
+    rgb = apply_fog(rgb, i.world);
+    return vec4f(aces(rgb), 1.0);
 }
 "#;
 
@@ -99,6 +130,10 @@ struct FrameUniform {
     view_proj: [[f32; 4]; 4],
     sun_dir: [f32; 3],
     time: f32,
+    light_col: [f32; 3],
+    amb: f32,
+    eye: [f32; 3],
+    tod: f32,
 }
 
 fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
@@ -482,13 +517,41 @@ impl GpuState {
         let eye = [18.0, 14.0, 22.0];
         let view_m = look_at(eye, [0.0, 0.5, 0.0], [0.0, 1.0, 0.0]);
         let vp = mul4(proj, view_m);
+        let t = self.t0.elapsed().as_secs_f32();
+        // ~30 min day cycle (parity with web celestial)
+        let tod = (t / 1800.0).fract();
+        let elev = (tod * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2).sin();
+        let az = tod * std::f32::consts::TAU;
+        let sun_dir = [
+            az.cos() * elev.abs().max(0.05),
+            -elev.max(0.05),
+            az.sin() * elev.abs().max(0.05),
+        ];
+        let day = ((elev + 0.15) / 1.15).clamp(0.0, 1.0);
+        let light_col = [
+            0.55 + 0.45 * day,
+            0.48 + 0.42 * day,
+            0.42 + 0.48 * day,
+        ];
         let ubo = FrameUniform {
             view_proj: vp,
-            sun_dir: [-0.35, -0.85, -0.25],
-            time: self.t0.elapsed().as_secs_f32(),
+            sun_dir,
+            time: t,
+            light_col,
+            amb: 0.18 + 0.22 * day,
+            eye,
+            tod,
         };
         self.queue
             .write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&ubo));
+
+        // Clear color tracks TOD sky
+        let clear = wgpu::Color {
+            r: (0.08 + 0.34 * day as f64),
+            g: (0.10 + 0.52 * day as f64),
+            b: (0.18 + 0.60 * day as f64),
+            a: 1.0,
+        };
 
         let mut encoder = self
             .device
@@ -500,12 +563,7 @@ impl GpuState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.42,
-                            g: 0.62,
-                            b: 0.78,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -589,6 +647,16 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
+    let features = EngineFeatures::preview();
+    log::info!(
+        "falseworld-wgpu track: shadows={} celestial={} mesh={} ray={} hdr={} passes={:?}",
+        features.shadows,
+        features.celestial,
+        features.mesh_shaders,
+        features.ray_query,
+        features.hdr_surface,
+        aaa_pass_order(&features)
+    );
     if std::env::args().any(|a| a == "--bake-only") {
         let chunk = generate_chunk(
             &ChunkRequest {

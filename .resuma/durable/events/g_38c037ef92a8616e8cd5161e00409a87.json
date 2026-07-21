@@ -1,0 +1,109 @@
+[
+  {
+    "kind": "worker",
+    "node": "worker",
+    "timestamp_ms": 1784502737773,
+    "type": "node_start"
+  },
+  {
+    "message": "execution started",
+    "node": "worker",
+    "timestamp_ms": 1784502737773,
+    "type": "log"
+  },
+  {
+    "message": "chunk bake started",
+    "node": "worker",
+    "timestamp_ms": 1784502737773,
+    "type": "log"
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502737773,
+    "type": "progress",
+    "value": 5
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502737877,
+    "type": "progress",
+    "value": 8
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502737991,
+    "type": "progress",
+    "value": 13
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738092,
+    "type": "progress",
+    "value": 16
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738193,
+    "type": "progress",
+    "value": 20
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738295,
+    "type": "progress",
+    "value": 24
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738399,
+    "type": "progress",
+    "value": 28
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738508,
+    "type": "progress",
+    "value": 31
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738624,
+    "type": "progress",
+    "value": 36
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738736,
+    "type": "progress",
+    "value": 40
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738845,
+    "type": "progress",
+    "value": 50
+  },
+  {
+    "node": "worker",
+    "timestamp_ms": 1784502738845,
+    "type": "progress",
+    "value": 100
+  },
+  {
+    "data": {
+      "artifact_id": "a_54db73314ae011ce4c6cd18b",
+      "blades": 0,
+      "bytes": 1048624,
+      "content_type": "application/x-falseworld-chunk",
+      "height_res": 512
+    },
+    "timestamp_ms": 1784502738853,
+    "type": "result"
+  },
+  {
+    "duration_ms": 1080,
+    "node": "worker",
+    "timestamp_ms": 1784502738853,
+    "type": "node_done"
+  }
+]

@@ -8,16 +8,29 @@ Inicio de un juego de superficie (pradera procedural): **workers Resuma** cuecen
 |--------|-----|
 | `falseworld-core` | PCG, FBM, heightmap, packing de blades, codec **FWCH** |
 | `falseworld` | App Resuma Flow — `start_meadow_chunk` / `claim_meadow_chunk` |
-| `falseworld-wgpu` | Preview nativo ([docs.rs/wgpu](https://docs.rs/wgpu/latest/wgpu/)) |
+| `falseworld-wgpu` | Preview nativo ([docs.rs/wgpu](https://docs.rs/wgpu/latest/wgpu/)) — ver [ENGINE.md](./ENGINE.md) (pista AAA) |
+
+## Avatar VRM (estilo VRMedia)
+
+El meadow es **WebGPU**; el personaje es una **capa WebGL** con el mismo stack que [VRMedia](../vrmedia): Three.js + `@pixiv/three-vrm` + retarget Mixamo.
+
+Assets (symlinks locales, no van al repo remoto por tamaño/licencia de vrmedia):
+
+- `/avatars/sophia.vrm` → `vrmedia/.../avatar1.vrm`
+- `/animaciones/Standing Idle.fbx`, `/animaciones/Walking.fbx`
+
+Cambia el VRM dejando otro `.vrm` en `public/avatars/` y ajustando la URL en `falseworld-vrm.js`.
 
 ## Run (web)
 
 ```bash
 cd apps/falseworld
-cargo run -p falseworld
+# PATH necesita ~/.cargo/bin
+resuma dev
+# o: cargo run -p falseworld
 ```
 
-Abre la URL que imprime Flow (CSP WebGPU activada). WASD caminar, **C** cicla cámara, botones Follow/FPV/Orbit.
+Abre la URL (CSP WebGPU + `esm.sh` para three-vrm). WASD caminar, **C** cicla cámara.
 
 ## Run (nativo wgpu)
 
