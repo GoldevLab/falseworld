@@ -33,12 +33,31 @@ pub fn page(_req: FlowRequest) -> View {
             let api = null;
             let vrmApi = null;
             let invApi = null;
+            let mpApi = null;
             let alive = true;
             let readyToStart = false;
             let started = false;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const WORLD_SEED = 42;
 
             let gateHasError = false;
+
+            // Guest identity before GPU boots (ownership / presence id)
+            window.__fw = window.__fw || {};
+            try {
+                const g = window.FalseWorldMp && window.FalseWorldMp.loadGuest
+                    ? window.FalseWorldMp.loadGuest()
+                    : null;
+                if (g) {
+                    window.__fw.playerId = g.id;
+                    window.__fw.playerName = g.name;
+                } else if (!window.__fw.playerId) {
+                    window.__fw.playerId = "local-" + Math.random().toString(36).slice(2, 10);
+                    window.__fw.playerName = "Guest";
+                }
+            } catch (_) {
+                window.__fw.playerId = window.__fw.playerId || "local";
+            }
 
             function syncInvToResuma(payload) {
                 if (!alive || !payload) return;
@@ -98,9 +117,59 @@ pub fn page(_req: FlowRequest) -> View {
                 } catch (_) {}
                 // Push current held tool into engine
                 if (invApi) notifyHeld(invApi.getActive());
+                // Join presence room once playable
+                try {
+                    if (window.FalseWorldMp && !mpApi) {
+                        mpApi = window.FalseWorldMp.create();
+                        const pushRemotes = (list) => {
+                            try {
+                                if (vrmApi && typeof vrmApi.setRemotePlayers === "function") {
+                                    vrmApi.setRemotePlayers(list || []);
+                                }
+                                if (api && typeof api.setPeerOverlays === "function") {
+                                    api.setPeerOverlays(list || []);
+                                }
+                                const n = (list && list.length) || 0;
+                                window.__fw = window.__fw || {};
+                                window.__fw.peerCount = n;
+                                if (started) {
+                                    if (n > 0) {
+                                        const p0 = list[0];
+                                        let hint = "";
+                                        try {
+                                            const me = api && api.getPose ? api.getPose() : null;
+                                            if (me && p0) {
+                                                const d = Math.hypot((+p0.x||0)-me.x, (+p0.z||0)-me.z);
+                                                hint = " · peer a " + Math.round(d) + "m";
+                                            }
+                                        } catch (_) {}
+                                        state.status.set("Online · " + (n + 1) + " jugadores" + hint + " · mira alrededor");
+                                    } else if (mpApi && mpApi.isConnected && mpApi.isConnected()) {
+                                        state.status.set("Online · solo tú · espera otro jugador");
+                                    }
+                                }
+                            } catch (_) {}
+                        };
+                        mpApi.connect({
+                            seed: WORLD_SEED,
+                            name: (window.__fw && window.__fw.playerName) || undefined,
+                            getPose: () => (api && api.getPose ? api.getPose() : null),
+                            onPeers: pushRemotes,
+                        });
+                        // Heal asymmetric views (missed join / duplicate-tab races)
+                        setInterval(() => {
+                            if (!mpApi || !started) return;
+                            try {
+                                if (typeof mpApi.requestSync === "function") mpApi.requestSync();
+                                pushRemotes(mpApi.getPeers());
+                            } catch (_) {}
+                        }, 1500);
+                        window.__fw.mp = mpApi;
+                    }
+                } catch (e) { console.warn("[FW mp]", e); }
             }
 
-            window.__fw = {
+            window.__fw = Object.assign(window.__fw || {}, {
                 setCam: (m) => {
                     if (!started) return;
                     state.cam_mode.set(String(m));
@@ -111,7 +180,8 @@ pub fn page(_req: FlowRequest) -> View {
                     api && api.rebake();
                 },
                 inv: null,
-            };
+                mp: null,
+            });
 
             function setPct(pct, label, phase) {
                 const p = Math.max(0, Math.min(99, Math.round(pct)));
@@ -169,7 +239,7 @@ pub fn page(_req: FlowRequest) -> View {
 
             async function bakeChunk(ox, oz) {
                 const startedBake = await __resuma.action("start_meadow_chunk", [
-                    42, 0, 0, 650, 0, 512,
+                    WORLD_SEED, 0, 0, 650, 0, 512,
                 ]);
                 const gid = startedBake.graph_id;
                 const token = startedBake.access_token || "";
@@ -194,6 +264,15 @@ pub fn page(_req: FlowRequest) -> View {
             }
 
             try {
+                // Wait for multiplayer helper (guest id) then icons / inventory
+                for (let i = 0; i < 40 && !window.FalseWorldMp; i++) await sleep(40);
+                try {
+                    if (window.FalseWorldMp && window.FalseWorldMp.loadGuest) {
+                        const g = window.FalseWorldMp.loadGuest();
+                        window.__fw.playerId = g.id;
+                        window.__fw.playerName = g.name;
+                    }
+                } catch (_) {}
                 // 3D item icons (Three.js) then inventory UI
                 for (let i = 0; i < 80 && !window.FalseWorldItemIcons; i++) await sleep(40);
                 try {
@@ -246,6 +325,8 @@ pub fn page(_req: FlowRequest) -> View {
                                 }
                             },
                         });
+                        window.__fw = window.__fw || {};
+                        window.__fw.vrm = vrmApi;
                         setPct(42, "LOADING… avatar ok", "load");
                     } catch (ve) {
                         console.warn("[VRM]", ve);
@@ -322,6 +403,7 @@ pub fn page(_req: FlowRequest) -> View {
 
             return () => {
                 alive = false;
+                try { mpApi && mpApi.destroy(); } catch (_) {}
                 try { invApi && invApi.destroy(); } catch (_) {}
                 try { vrmApi && vrmApi.destroy(); } catch (_) {}
                 try { api && api.destroy(); } catch (_) {}
@@ -344,12 +426,12 @@ pub fn page(_req: FlowRequest) -> View {
         <div class="stage" data-unlocked={unlocked}>
             <div class="viewport">
                 {client_component(
-                    ClientComponent::new("fw-item-icons-v3")
+                    ClientComponent::new("fw-item-icons-v5")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-inventory-v2")
+                    ClientComponent::new("fw-inventory-v3")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
@@ -364,12 +446,17 @@ pub fn page(_req: FlowRequest) -> View {
                         .aria_hidden(true)
                 )}
                 {client_component(
+                    ClientComponent::new("fw-multiplayer-v1")
+                        .class("fw-boot")
+                        .aria_hidden(true)
+                )}
+                {client_component(
                     ClientComponent::new("fw-meadow-gpu-v217")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-vrm-v41")
+                    ClientComponent::new("fw-meadow-vrm-v42")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}

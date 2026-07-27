@@ -1,0 +1,14 @@
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+locator.waitFor: Timeout 180000ms exceeded.
+Call log:
+  - waiting for locator('#fw-start, button:has-text("START")').first() to be visible
+
+    at bootTab (/home/golfredo/Documentos/apps/falseworld/tmp/mp-two-tabs.mjs:17:15)
+    at /home/golfredo/Documentos/apps/falseworld/async file:/home/golfredo/Documentos/apps/falseworld/tmp/mp-two-tabs.mjs:41:13 {
+  name: 'TimeoutError'
+}
+
+Node.js v22.22.3

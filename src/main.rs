@@ -6,6 +6,7 @@ use serde_json::Value;
 
 mod explosives;
 mod inventory;
+mod multiplayer;
 mod pages;
 mod workers;
 
@@ -116,14 +117,15 @@ async fn main() -> std::io::Result<()> {
             "Procedural meadow on Resuma workers + WebGPU, VRM avatar overlay (VRMedia stack). Inspired by False Earth; original meadow code.",
         )
         .with_head(CSS)
+        .route("/_fw/mp/ws", multiplayer::ws_route())
         // New ids bust Resuma's year-long immutable client cache
         .client_asset(
-            "fw-item-icons-v3",
-            include_bytes!("../static/client/fw-item-icons-v3.js"),
+            "fw-item-icons-v5",
+            include_bytes!("../static/client/fw-item-icons-v5.js"),
         )
         .client_asset(
-            "fw-inventory-v2",
-            include_bytes!("../static/client/fw-inventory-v2.js"),
+            "fw-inventory-v3",
+            include_bytes!("../static/client/fw-inventory-v3.js"),
         )
         .client_asset(
             "fw-explosives-v1",
@@ -134,12 +136,16 @@ async fn main() -> std::io::Result<()> {
             include_bytes!("../static/client/fw-progression-v1.js"),
         )
         .client_asset(
+            "fw-multiplayer-v1",
+            include_bytes!("../static/client/fw-multiplayer-v1.js"),
+        )
+        .client_asset(
             "fw-meadow-gpu-v217",
             include_bytes!("../static/client/fw-meadow-gpu-v217.js"),
         )
         .client_asset(
-            "fw-meadow-vrm-v41",
-            include_bytes!("../static/client/fw-meadow-vrm-v41.js"),
+            "fw-meadow-vrm-v42",
+            include_bytes!("../static/client/fw-meadow-vrm-v42.js"),
         )
         .with_public_dir(public_dir)
         .without_pwa()

@@ -1,0 +1,6 @@
+[A] loading… LOADING… 0%
+[A] WebGPU is experimental on this platform. See https://github.com/gpuweb/gpuweb/wiki/Implementation-Status#implementation-status
+[A] Failed to create WebGPU Context Provider
+E2E_FAIL Error: [A] load error: SYSTEM INCOMPATIBLE
+    at waitStart (file:///home/golfredo/Documentos/apps/falseworld/tmp/mp-e2e.mjs:22:20)
+    at async file:///home/golfredo/Documentos/apps/falseworld/tmp/mp-e2e.mjs:67:3

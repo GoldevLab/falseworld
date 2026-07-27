@@ -1,0 +1,30 @@
+[A] connected as { id: '8327ccf7-e663-475a-8b2f-ac34575ff70b', name: 'Guest-8327-6jo' }
+[B] connected as { id: '31552efd-2c35-4ee3-bd70-1494c5b56751', name: 'Guest-3155-8nq' }
+A_final {
+  "id": "8327ccf7-e663-475a-8b2f-ac34575ff70b",
+  "connected": true,
+  "peerCount": 1,
+  "peers": [
+    {
+      "id": "31552efd",
+      "x": 8.4,
+      "y": 3.9,
+      "z": 6
+    }
+  ]
+}
+B_final {
+  "id": "31552efd-2c35-4ee3-bd70-1494c5b56751",
+  "connected": true,
+  "peerCount": 1,
+  "peers": [
+    {
+      "id": "8327ccf7",
+      "x": 6.9,
+      "y": 3.4,
+      "z": 8.8
+    }
+  ]
+}
+RESULT { aSeesB: true, bSeesA: true, aPeers: 1, bPeers: 1 }
+PASS both tabs see each other via presence

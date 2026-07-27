@@ -3022,10 +3022,13 @@ fn fxaa(uv : vec2f) -> vec3f {
   let dims = vec2f(textureDimensions(post_depth));
   let raw_d = textureLoad(post_depth, vec2i(clamp(uv, vec2f(0.0), vec2f(0.999)) * dims), 0);
   let meadow_z = linearize_depth(raw_d);
-  // Tiny sole/terrain epsilon only — grass in front of feet must win.
-  // (Old bias 0.25–0.55m let the whole shin draw over the meadow.)
-  let eps = 0.06;
-  let cover = select(0.0, 1.0, av.a >= 0.04 && av_z + eps < meadow_z);
+  // Local avatar: normal depth test vs meadow.
+  // Remotes may paint with depthWrite=false (clear depth ~1.0) so also accept
+  // high av_dn — otherwise peers are invisible while HTML nameplates still show.
+  let eps = 1.35;
+  let depth_ok = av_z < meadow_z + eps;
+  let remote_paint = av_dn > 0.995;
+  let cover = select(0.0, 1.0, av.a >= 0.02 && (depth_ok || remote_paint));
   let rgb = mix(meadow.rgb, av.rgb, clamp(av.a, 0.0, 1.0) * cover);
   return vec4f(rgb, 1.0);
 }
@@ -7788,7 +7791,22 @@ fn fxaa(uv : vec2f) -> vec3f {
     // decay, soft/hard side. Complements the modular piece mesh layer above.
     // =============================================================================
 
-    const LOCAL_PLAYER_ID = "local";
+    const LOCAL_PLAYER_ID =
+      (typeof window !== "undefined" && window.__fw && window.__fw.playerId)
+        ? String(window.__fw.playerId)
+        : "local";
+    // Spread guests so two tabs don't stack at the origin (remote disappears in FPV).
+    if (LOCAL_PLAYER_ID && LOCAL_PLAYER_ID !== "local") {
+      let h = 2166136261;
+      for (let i = 0; i < LOCAL_PLAYER_ID.length; i++) {
+        h ^= LOCAL_PLAYER_ID.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      const ang = ((h >>> 0) % 628) / 100;
+      const rad = 3 + ((h >>> 8) % 40) * 0.12;
+      player.x = Math.cos(ang) * rad;
+      player.z = Math.sin(ang) * rad;
+    }
     const TC_RADIUS = 16.0; // meters — ~5.3 foundations
     const FOUND_MAX_ABOVE_TERRAIN = 3.2; // stilts height limit vs ground
     const STAB_VERT_LOSS = 0.12; // ~12% per level up
@@ -10306,13 +10324,76 @@ fn fxaa(uv : vec2f) -> vec3f {
         const base = piece.baseY + piece.iy * BUILD_LEVEL_H + lift;
         const yaw = ((piece.yaw % 4) + 4) % 4;
         const big = piece.type === "box_large";
-        const w = big ? 0.55 : 0.38;
-        const h = big ? 0.55 : 0.38;
-        const d = w * 0.8;
-        const wood = [0.42, 0.28, 0.14];
-        const lid = [0.32, 0.2, 0.1];
-        buildPushBoxLocal(arr, cx, cz, yaw, -w, base, -d, w, base + h, d, wood);
-        buildPushBoxLocal(arr, cx, cz, yaw, -w, base + h, -d, w, base + h + 0.06, d, lid);
+        const s = big ? 1.0 : 0.72;
+        const w = 0.52 * s;
+        const d = 0.38 * s;
+        const bodyH = 0.44 * s;
+        const oak = [0.52, 0.34, 0.16];
+        const oakLite = [0.62, 0.42, 0.20];
+        const oakDark = [0.32, 0.18, 0.08];
+        const iron = [0.30, 0.30, 0.32];
+        const ironLite = [0.52, 0.50, 0.48];
+        const brass = [0.78, 0.58, 0.18];
+        const y0 = base;
+        const yBody = y0 + 0.05 * s;
+        const yLid = yBody + bodyH;
+        const L = (lx0, y0b, lz0, lx1, y1b, lz1, rgb) =>
+          buildPushBoxLocal(arr, cx, cz, yaw, lx0, y0b, lz0, lx1, y1b, lz1, rgb);
+
+        // Feet
+        const ft = 0.07 * s;
+        L(-w, y0, -d, -w + ft, yBody, -d + ft, iron);
+        L(w - ft, y0, -d, w, yBody, -d + ft, iron);
+        L(-w, y0, d - ft, -w + ft, yBody, d, iron);
+        L(w - ft, y0, d - ft, w, yBody, d, iron);
+        L(-w * 1.02, y0 + 0.015 * s, -d * 1.02, w * 1.02, yBody, d * 1.02, oakDark);
+
+        // Plank courses
+        const plankN = big ? 5 : 4;
+        const ph = bodyH / plankN;
+        for (let pi = 0; pi < plankN; pi++) {
+          const col = (pi % 2 === 0) ? oak : oakLite;
+          const yy0 = yBody + pi * ph;
+          const yy1 = yy0 + ph * 0.9;
+          L(-w, yy0, -d, w, yy1, d, col);
+          if (pi < plankN - 1) {
+            L(-w * 0.98, yy1, -d * 1.01, w * 0.98, yy0 + ph, d * 1.01, oakDark);
+          }
+        }
+        // End boards
+        L(-w - 0.02 * s, yBody, -d * 0.9, -w + 0.035 * s, yLid, d * 0.9, oakDark);
+        L(w - 0.035 * s, yBody, -d * 0.9, w + 0.02 * s, yLid, d * 0.9, oakDark);
+
+        // Iron bands + rivets on front
+        const bandYs = [yBody + bodyH * 0.2, yBody + bodyH * 0.7];
+        for (let bi = 0; bi < bandYs.length; bi++) {
+          const by = bandYs[bi];
+          const bh = 0.04 * s;
+          L(-w - 0.02 * s, by, -d - 0.015 * s, w + 0.02 * s, by + bh, d + 0.015 * s, iron);
+          for (let ri = -2; ri <= 2; ri++) {
+            const rx = ri * 0.14 * s;
+            L(rx - 0.02 * s, by + 0.006 * s, d + 0.01 * s, rx + 0.02 * s, by + bh - 0.006 * s, d + 0.035 * s, ironLite);
+          }
+        }
+        // Vertical front strap + lock plate
+        L(-0.045 * s, yBody + 0.02 * s, d - 0.01 * s, 0.045 * s, yLid + 0.02 * s, d + 0.03 * s, iron);
+        L(-0.08 * s, yLid - 0.12 * s, d + 0.02 * s, 0.08 * s, yLid - 0.02 * s, d + 0.05 * s, brass);
+        L(-0.03 * s, yLid - 0.09 * s, d + 0.045 * s, 0.03 * s, yLid - 0.05 * s, d + 0.07 * s, ironLite);
+
+        // Stepped / slightly arched lid
+        const lidSteps = [
+          { y: 0.00, h: 0.05, ws: 1.03, ds: 1.05 },
+          { y: 0.04, h: 0.055, ws: 0.96, ds: 0.92 },
+          { y: 0.09, h: 0.045, ws: 0.82, ds: 0.72 },
+          { y: 0.13, h: 0.035, ws: 0.58, ds: 0.42 },
+        ];
+        for (let li = 0; li < lidSteps.length; li++) {
+          const S = lidSteps[li];
+          const col = (li % 2 === 0) ? oakDark : oak;
+          L(-w * S.ws, yLid + S.y * s, -d * S.ds, w * S.ws, yLid + (S.y + S.h) * s, d * S.ds, col);
+        }
+        // Lid iron rim
+        L(-w * 1.01, yLid - 0.01 * s, -d * 1.01, w * 1.01, yLid + 0.025 * s, d * 1.01, iron);
         return;
       }
       if (piece.type === "scrap_barrel") {
@@ -11597,6 +11678,100 @@ fn fxaa(uv : vec2f) -> vec3f {
         x: (ndcX * 0.5 + 0.5) * rect.width,
         y: (-ndcY * 0.5 + 0.5) * rect.height,
       };
+    }
+
+    // Screen-space nameplates for remote players (survive avatar depth-merge misses)
+    let peerOverlayRoot = null;
+    const peerOverlayById = new Map();
+    let peerOverlayList = [];
+
+    function ensurePeerOverlayRoot() {
+      if (peerOverlayRoot || typeof document === "undefined") return;
+      peerOverlayRoot = document.createElement("div");
+      peerOverlayRoot.id = "fw-peer-overlays";
+      peerOverlayRoot.setAttribute("aria-hidden", "true");
+      peerOverlayRoot.style.cssText =
+        "position:absolute;inset:0;pointer-events:none;z-index:6;overflow:hidden;";
+      const stage = document.querySelector(".stage") || canvas.parentElement || document.body;
+      if (getComputedStyle(stage).position === "static") stage.style.position = "relative";
+      stage.appendChild(peerOverlayRoot);
+    }
+
+    function setPeerOverlays(list) {
+      peerOverlayList = Array.isArray(list) ? list : [];
+    }
+
+    function tickPeerOverlays() {
+      let list = peerOverlayList;
+      try {
+        const vrm = typeof window !== "undefined" && window.__fw && window.__fw.vrm;
+        if (vrm && typeof vrm.getRemotePoses === "function") {
+          const poses = vrm.getRemotePoses();
+          if (poses && poses.length) {
+            const byId = Object.create(null);
+            for (let i = 0; i < peerOverlayList.length; i++) {
+              const p = peerOverlayList[i];
+              if (p && p.id) byId[p.id] = p;
+            }
+            list = poses.map((p) => {
+              const base = byId[p.id] || {};
+              return {
+                id: p.id,
+                name: p.name || base.name || "Guest",
+                x: p.x,
+                y: p.y,
+                z: p.z,
+              };
+            });
+          }
+        }
+      } catch (_) {}
+      if (!list.length) {
+        if (peerOverlayById.size) {
+          for (const [, el] of peerOverlayById) el.remove();
+          peerOverlayById.clear();
+        }
+        return;
+      }
+      ensurePeerOverlayRoot();
+      if (!peerOverlayRoot) return;
+      const seen = new Set();
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        if (!p || !p.id) continue;
+        seen.add(p.id);
+        let el = peerOverlayById.get(p.id);
+        if (!el) {
+          el = document.createElement("div");
+          el.className = "fw-peer-tag";
+          el.style.cssText =
+            "position:absolute;transform:translate(-50%,-100%);" +
+            "padding:4px 10px;border-radius:4px;background:rgba(8,12,10,.78);" +
+            "color:#e8f0e4;font:600 13px/1.2 \"IBM Plex Sans\",sans-serif;" +
+            "white-space:nowrap;letter-spacing:.02em;border:1px solid rgba(140,200,120,.45);" +
+            "text-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:none;";
+          peerOverlayRoot.appendChild(el);
+          peerOverlayById.set(p.id, el);
+        }
+        const feetY = Number.isFinite(+p.y) ? +p.y : player.feetY;
+        const headY = feetY + 2.05;
+        const scr = projectWorldToStage(+p.x || 0, headY, +p.z || 0);
+        const dist = Math.hypot((+p.x || 0) - player.x, (+p.z || 0) - player.z);
+        el.textContent = (p.name || "Guest") + " · " + Math.round(dist) + "m";
+        if (!scr) {
+          el.style.opacity = "0";
+          continue;
+        }
+        el.style.opacity = "1";
+        el.style.left = scr.x + "px";
+        el.style.top = scr.y + "px";
+        el.style.transform = "translate(-50%,-100%)";
+      }
+      for (const [id, el] of peerOverlayById) {
+        if (seen.has(id)) continue;
+        el.remove();
+        peerOverlayById.delete(id);
+      }
     }
 
     function updateInteractPrompt() {
@@ -14476,6 +14651,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const { mvp, view, proj, target, eye, focusDist } = cameraMatrices();
       lastMvp = mvp;
       try { updateInteractPrompt(); } catch (_) {}
+      try { tickPeerOverlays(); } catch (_) {}
 
       // Full day/night cycle (~2.5 min). Offset so load starts mid-morning.
       const DAY_LEN = 1800; // 30 min full day/night (was 150s — too fast)
@@ -14911,6 +15087,9 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (b) b.remove();
         const c = document.getElementById("fw-tc-panel");
         if (c) c.remove();
+        if (peerOverlayRoot) peerOverlayRoot.remove();
+        peerOverlayRoot = null;
+        peerOverlayById.clear();
       } catch (_) {}
       try { delete window.__fwBuildAAA; } catch (_) {}
     }
@@ -14924,6 +15103,9 @@ fn fxaa(uv : vec2f) -> vec3f {
       openWorkbenchUI, openResearchUI, tryUseAimed,
       getVitals: () => vitals,
       killPlayer,
+      /** Project world meters → stage CSS px (null if behind camera). */
+      projectWorld: projectWorldToStage,
+      setPeerOverlays,
     };
   }
 
