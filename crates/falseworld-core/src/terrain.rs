@@ -57,8 +57,8 @@ pub fn rolling_hills(x: f32, z: f32, seed: u32) -> f32 {
     let detail = fbm(x2 * 0.016, z2 * 0.016, seed.wrapping_add(317), 2);
     let b = soft_lobe(broad * 0.5 + 0.5);
     let m = soft_lobe(mid * 0.5 + 0.5);
-    // Long, low rolls — no alpine spikes
-    let h = b * 1.65 + m * 0.55 + detail * 0.08;
+    // Long, low rolls — visible colinas on the small island
+    let h = b * 2.35 + m * 0.85 + detail * 0.12;
     h * mask
 }
 
@@ -74,7 +74,7 @@ pub fn center_mountain(x: f32, z: f32, seed: u32) -> f32 {
     // Cosine-like mound: flat-ish top, soft skirts
     let fall = ((1.0 - u * u).max(0.0)).powf(2.4);
     let n = fbm(wx * 0.012, wz * 0.012, seed.wrapping_add(611), 3) * 0.5 + 0.5;
-    (0.55 + n * 0.4) * fall
+    (0.95 + n * 0.65) * fall
 }
 
 pub fn cordillera(x: f32, z: f32, seed: u32) -> f32 {
@@ -110,12 +110,12 @@ pub fn terrain_height(x: f32, z: f32, p: &TerrainParams) -> f32 {
     h += center_mountain(x, z, p.seed);
     h += snow_hills(x, z, p.seed);
 
-    // Soft ceiling — squash tall spikes into rounded colinas (~4–5 m)
-    if h > 2.2 {
-        h = 2.2 + (h - 2.2) * 0.42;
+    // Soft ceiling — allow taller rounded hills (~8–10 m)
+    if h > 3.5 {
+        h = 3.5 + (h - 3.5) * 0.55;
     }
-    if h > 3.8 {
-        h = 3.8 + (h - 3.8) * 0.35;
+    if h > 6.5 {
+        h = 6.5 + (h - 6.5) * 0.40;
     }
 
     let edge = island_edge(x, z);
@@ -140,7 +140,7 @@ pub fn terrain_height(x: f32, z: f32, p: &TerrainParams) -> f32 {
         // Into water after the berm — soft shelf, not a drop
         let into = ((e - 0.38) / 0.62).clamp(0.0, 1.0);
         let tw = into * into * (3.0 - 2.0 * into);
-        h = h * (1.0 - tw * 0.9) - tw * 7.5;
+        h = h * (1.0 - tw * 0.9) - tw * 4.8;
     }
     h
 }

@@ -1,0 +1,10 @@
+[
+  "[warning] [GroupMarkerNotSet(crbug.com/242999)!:A0B01D00CC2A0000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+  "[warning] [.WebGL-0x22dc02568e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+  "[warning] [.WebGL-0x22dc02568e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+  "[warning] [.WebGL-0x22dc02568e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+  "[warning] [.WebGL-0x22dc02568e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)",
+  "[warning] [GroupMarkerNotSet(crbug.com/242999)!:A0E01D00CC2A0000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+  "[info] WebGPU is experimental on this platform. See https://github.com/gpuweb/gpuweb/wiki/Implementation-Status#implementation-status",
+  "[warning] WebGPU on Linux requires GLES compat, or command-line flag --enable-features=Vulkan, or command-line flag --enable-features=SkiaGraphite (and skia_use_dawn = true GN arg)"
+]

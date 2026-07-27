@@ -43,8 +43,8 @@ async fn start_meadow_chunk(
         area,
         height_res,
         blades_per_axis: blades,
-        terrain_amp: 0.55,
-        terrain_freq: 0.022,
+        terrain_amp: 1.15,
+        terrain_freq: 0.026,
     })
     .await
 }
@@ -134,8 +134,8 @@ async fn main() -> std::io::Result<()> {
             include_bytes!("../static/client/fw-progression-v1.js"),
         )
         .client_asset(
-            "fw-meadow-gpu-v216",
-            include_bytes!("../static/client/fw-meadow-gpu-v216.js"),
+            "fw-meadow-gpu-v217",
+            include_bytes!("../static/client/fw-meadow-gpu-v217.js"),
         )
         .client_asset(
             "fw-meadow-vrm-v41",

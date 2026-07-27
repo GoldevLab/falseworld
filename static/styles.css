@@ -887,8 +887,9 @@ body.fw-gate-ready .load-gate {
   border-radius: 50%;
   pointer-events: none;
   z-index: 0;
+  /* CSS conic 0deg = top (same as icon layout). Do NOT subtract extra 90deg. */
   background: conic-gradient(
-    from calc((360deg / var(--n)) * var(--active) - 90deg - (180deg / var(--n))),
+    from calc((360deg / var(--n)) * var(--active) - (180deg / var(--n))),
     transparent 0deg,
     color-mix(in srgb, var(--br-accent) 42%, transparent) 0deg,
     color-mix(in srgb, var(--br-accent) 42%, transparent) calc(360deg / var(--n)),

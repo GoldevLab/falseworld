@@ -1,0 +1,6 @@
+poll 0: {"btnText":"[ START ]","disabled":null,"ready":true,"status":"CALIBRATING…","err":"","hasGpu":true,"hasInv":true,"hasVrm":true,"gate":true}
+[warning] [.WebGL-0x2e1c00148a00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x2e1c00148a00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x2e1c00148a00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x2e1c00148a00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
+after start: {"unlocked":"1","gateGone":true,"invSlots":6,"canvasW":1280,"canvasH":800,"status":"Bosque · día","held":"Mano: Roca · slot 0","webgpu":true}

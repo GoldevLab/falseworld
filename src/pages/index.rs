@@ -91,7 +91,7 @@ pub fn page(_req: FlowRequest) -> View {
                 try {
                     if (vrmApi && typeof vrmApi.setPlayable === "function") vrmApi.setPlayable(true);
                 } catch (_) {}
-                state.status.set("Click captura mira · WASD · Space salto · Ctrl agachar · Shift correr · C cámara · G mapa");
+                state.status.set("Click captura mira · WASD · Space salto · C agachar · X toggle · Shift correr · V cámara · G mapa");
                 try { canvas.focus(); } catch (_) {}
                 try {
                   if (canvas.requestPointerLock) canvas.requestPointerLock();
@@ -364,7 +364,7 @@ pub fn page(_req: FlowRequest) -> View {
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-gpu-v216")
+                    ClientComponent::new("fw-meadow-gpu-v217")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
@@ -441,7 +441,9 @@ pub fn page(_req: FlowRequest) -> View {
                         <div class="load-hints">
                             <span><kbd>"W"</kbd><kbd>"A"</kbd><kbd>"S"</kbd><kbd>"D"</kbd>" MOVE"</span>
                             <span><kbd>"Space"</kbd>" SALTO"</span>
-                            <span><kbd>"Ctrl"</kbd>" AGACHAR"</span>
+                            <span><kbd>"C"</kbd>" AGACHAR"</span>
+                            <span><kbd>"X"</kbd>" CROUCH TOGGLE"</span>
+                            <span><kbd>"V"</kbd>" CÁMARA"</span>
                             <span><kbd>"Shift"</kbd>" CORRER"</span>
                             <span><kbd>"MMB"</kbd>" RUEDA"</span>
                             <span><kbd>"RMB"</kbd>" ÓRBITA"</span>
