@@ -1,7 +1,7 @@
-//! Realtime presence rooms over WebSocket (`GET /_fw/mp/ws`).
+//! Realtime presence + shared build world over WebSocket (`GET /_fw/mp/ws`).
 //!
-//! One room per world `seed`. Guests join with a name; poses broadcast ~20 Hz
-//! to other peers (no echo). Builds / inventory are out of scope for v1.
+//! One room per world `seed`. Guests join with a name; poses broadcast ~30 Hz
+//! and player-placed build pieces are relayed (+ snapshot for late join).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,10 +14,12 @@ use axum::routing::{get, MethodRouter};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const MAX_PEERS: usize = 32;
+const MAX_WORLD_PIECES: usize = 2500;
 const POSE_MIN_INTERVAL_MS: u128 = 30;
 /// Must tolerate a background browser tab: Chrome throttles timers heavily, so
 /// pose heartbeats can pause for tens of seconds while the WebSocket stays open.
@@ -50,6 +52,8 @@ struct PeerLive {
 
 struct Room {
     peers: HashMap<String, PeerLive>,
+    /// Player-built pieces keyed by stable string id (shared across peers).
+    world: HashMap<String, Value>,
 }
 
 type Rooms = Arc<Mutex<HashMap<u32, Room>>>;
@@ -85,6 +89,48 @@ fn sanitize_name(raw: &str) -> String {
     }
 }
 
+fn sanitize_piece_id(raw: &str) -> Option<String> {
+    let t: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(96)
+        .collect();
+    if t.len() >= 3 {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+fn piece_id_of(piece: &Value) -> Option<String> {
+    piece
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(sanitize_piece_id)
+}
+
+fn is_syncable_piece(piece: &Value) -> bool {
+    let ty = piece.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if ty.is_empty() || ty.len() > 40 {
+        return false;
+    }
+    if matches!(
+        ty,
+        "world_ore" | "world_tree" | "scrap_barrel" | "fx_blast" | "satchel_charge" | "c4_charge"
+    ) {
+        return false;
+    }
+    if piece.get("ownerId").and_then(|v| v.as_str()) == Some("world") {
+        return false;
+    }
+    piece_id_of(piece).is_some()
+}
+
+fn world_snapshot_msg(room: &Room) -> String {
+    let pieces: Vec<&Value> = room.world.values().collect();
+    json!({ "t": "world", "pieces": pieces }).to_string()
+}
+
 #[derive(Debug, Deserialize)]
 struct JoinQuery {
     seed: Option<u32>,
@@ -103,6 +149,8 @@ struct ClientMsg {
     moving: Option<bool>,
     sprinting: Option<bool>,
     crouching: Option<bool>,
+    piece: Option<Value>,
+    id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -187,6 +235,7 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
         let mut rooms = ROOMS.lock();
         let room = rooms.entry(seed).or_insert_with(|| Room {
             peers: HashMap::new(),
+            world: HashMap::new(),
         });
         sweep_stale(room);
         if room.peers.contains_key(&self_id) {
@@ -215,6 +264,7 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
             };
             // Only peers that already sent a pose — avoids a pile of 0,0,0 ghosts.
             let others = posed_peers(room, "");
+            let world_msg = world_snapshot_msg(room);
             room.peers.insert(
                 self_id.clone(),
                 PeerLive {
@@ -234,6 +284,7 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
             })
             .unwrap_or_default();
             let _ = tx.send(welcome);
+            let _ = tx.send(world_msg);
             Ok(())
         }
     };
@@ -296,15 +347,18 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
                 }
             }
             "sync" => {
-                let roster = {
+                let (roster, world_msg) = {
                     let mut rooms = ROOMS.lock();
                     if let Some(room) = rooms.get_mut(&seed) {
                         if let Some(peer) = room.peers.get_mut(&self_id) {
                             peer.last_seen = Instant::now();
                         }
-                        posed_peers(room, &self_id)
+                        (
+                            posed_peers(room, &self_id),
+                            world_snapshot_msg(room),
+                        )
                     } else {
-                        Vec::new()
+                        (Vec::new(), json!({ "t": "world", "pieces": [] }).to_string())
                     }
                 };
                 let msg = serde_json::to_string(&RosterMsg {
@@ -313,6 +367,51 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
                 })
                 .unwrap_or_default();
                 let _ = tx.send(msg);
+                let _ = tx.send(world_msg);
+            }
+            "place" => {
+                let Some(piece) = parsed.piece else {
+                    continue;
+                };
+                if !is_syncable_piece(&piece) {
+                    continue;
+                }
+                let Some(pid) = piece_id_of(&piece) else {
+                    continue;
+                };
+                let mut rooms = ROOMS.lock();
+                let Some(room) = rooms.get_mut(&seed) else {
+                    continue;
+                };
+                if let Some(peer) = room.peers.get_mut(&self_id) {
+                    peer.last_seen = Instant::now();
+                }
+                if room.world.len() >= MAX_WORLD_PIECES && !room.world.contains_key(&pid) {
+                    continue;
+                }
+                room.world.insert(pid, piece.clone());
+                let out = json!({ "t": "place", "piece": piece }).to_string();
+                broadcast(room, &self_id, &out);
+            }
+            "remove" => {
+                let Some(raw_id) = parsed.id.as_deref() else {
+                    continue;
+                };
+                let Some(pid) = sanitize_piece_id(raw_id) else {
+                    continue;
+                };
+                let mut rooms = ROOMS.lock();
+                let Some(room) = rooms.get_mut(&seed) else {
+                    continue;
+                };
+                if let Some(peer) = room.peers.get_mut(&self_id) {
+                    peer.last_seen = Instant::now();
+                }
+                if room.world.remove(&pid).is_none() {
+                    // Still broadcast so peers that have a local copy can drop it.
+                }
+                let out = json!({ "t": "remove", "id": pid }).to_string();
+                broadcast(room, &self_id, &out);
             }
             "pose" => {
                 let mut rooms = ROOMS.lock();

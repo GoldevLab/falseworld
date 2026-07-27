@@ -7876,7 +7876,17 @@ fn fxaa(uv : vec2f) -> vec3f {
     const DEMOLISH_GRACE_MS = 120000; // 2 min — then the piece is permanent
 
     function ensurePieceInternals(p) {
-      if (!p.id) p.id = nextPieceId++;
+      if (p.id == null || p.id === "") {
+        p.id = String(LOCAL_PLAYER_ID || "local") + "-" + (nextPieceId++);
+      } else {
+        p.id = String(p.id);
+        // Keep local counter ahead of numeric suffixes when possible
+        const m = /^.*-(\d+)$/.exec(p.id);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (Number.isFinite(n) && n >= nextPieceId) nextPieceId = n + 1;
+        }
+      }
       if (p.tier == null) p.tier = 0; // twigs on place (Rust)
       if (p.maxHp == null) p.maxHp = tierMaxHp(p.tier);
       if (p.hp == null) p.hp = p.maxHp;
@@ -7909,6 +7919,188 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (!p.auth) p.auth = [p.ownerId || LOCAL_PLAYER_ID];
       }
       return p;
+    }
+
+    function isNetworkWorldProp(p) {
+      if (!p) return true;
+      if (p.ownerId === "world") return true;
+      const t = p.type;
+      return t === "world_ore" || t === "world_tree" || t === "scrap_barrel"
+        || t === "fx_blast" || t === "satchel_charge" || t === "c4_charge";
+    }
+
+    function serializeBuildPiece(p) {
+      if (isNetworkWorldProp(p) || p.id == null) return null;
+      const out = {
+        id: String(p.id),
+        type: p.type,
+        ix: p.ix | 0,
+        iy: p.iy | 0,
+        iz: p.iz | 0,
+        yaw: p.yaw || 0,
+        baseY: +p.baseY || 0,
+        _ox: p._ox || 0,
+        _oz: p._oz || 0,
+        tier: p.tier | 0,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        stability: p.stability,
+        ownerId: p.ownerId,
+        placedAt: p.placedAt || 0,
+        softInward: p.softInward !== false,
+      };
+      if (p.wbTier != null) out.wbTier = p.wbTier | 0;
+      if (p.lit != null) out.lit = !!p.lit;
+      if (p.bagLabel) out.bagLabel = String(p.bagLabel).slice(0, 40);
+      if (p.isOpen != null) out.isOpen = !!p.isOpen;
+      if (p.locked != null) out.locked = !!p.locked;
+      if (p.doorYaw != null) out.doorYaw = p.doorYaw;
+      if (Array.isArray(p.slots)) out.slots = p.slots;
+      if (p.inv) out.inv = p.inv;
+      if (Array.isArray(p.auth)) out.auth = p.auth;
+      return out;
+    }
+
+    function notifyWorldPlace(p) {
+      const piece = serializeBuildPiece(p);
+      if (!piece) return;
+      try {
+        const mp = window.__fw && window.__fw.mp;
+        if (mp && typeof mp.sendPlace === "function") mp.sendPlace(piece);
+      } catch (_) {}
+    }
+
+    function notifyWorldRemove(id) {
+      if (id == null) return;
+      try {
+        const mp = window.__fw && window.__fw.mp;
+        if (mp && typeof mp.sendRemove === "function") mp.sendRemove(String(id));
+      } catch (_) {}
+    }
+
+    function applyRemotePlace(raw, opts) {
+      opts = opts || {};
+      const silent = !!opts.silent;
+      if (!raw || raw.id == null || !raw.type) return false;
+      if (isNetworkWorldProp(raw)) return false;
+      const id = String(raw.id);
+      let existing = null;
+      for (let i = 0; i < buildPieces.length; i++) {
+        if (String(buildPieces[i].id) === id) {
+          existing = buildPieces[i];
+          break;
+        }
+      }
+      if (existing) {
+        existing.type = raw.type;
+        existing.ix = raw.ix | 0;
+        existing.iy = raw.iy | 0;
+        existing.iz = raw.iz | 0;
+        existing.yaw = raw.yaw || 0;
+        existing.baseY = +raw.baseY || existing.baseY;
+        existing._ox = raw._ox || 0;
+        existing._oz = raw._oz || 0;
+        if (raw.tier != null) existing.tier = raw.tier | 0;
+        if (raw.hp != null) existing.hp = raw.hp;
+        if (raw.maxHp != null) existing.maxHp = raw.maxHp;
+        if (raw.stability != null) existing.stability = raw.stability;
+        if (raw.wbTier != null) existing.wbTier = raw.wbTier | 0;
+        if (raw.lit != null) existing.lit = !!raw.lit;
+        if (raw.isOpen != null) existing.isOpen = !!raw.isOpen;
+        if (raw.locked != null) existing.locked = !!raw.locked;
+        if (Array.isArray(raw.slots)) existing.slots = raw.slots;
+        if (raw.inv) existing.inv = raw.inv;
+        if (Array.isArray(raw.auth)) existing.auth = raw.auth;
+        invalidatePieceMesh(existing);
+        if (!silent) {
+          rebuildCellIndex();
+          recalculateStability();
+          rebuildBuildMesh();
+        }
+        return true;
+      }
+      const placed = ensurePieceInternals({
+        id,
+        type: raw.type,
+        ix: raw.ix | 0,
+        iy: raw.iy | 0,
+        iz: raw.iz | 0,
+        yaw: raw.yaw || 0,
+        baseY: +raw.baseY || 0,
+        _ox: raw._ox || 0,
+        _oz: raw._oz || 0,
+        tier: raw.tier != null ? raw.tier | 0 : 0,
+        hp: raw.hp,
+        maxHp: raw.maxHp,
+        stability: raw.stability != null ? raw.stability : 100,
+        ownerId: raw.ownerId || "remote",
+        placedAt: raw.placedAt || 0,
+        softInward: raw.softInward !== false,
+        wbTier: raw.wbTier,
+        lit: raw.lit,
+        bagLabel: raw.bagLabel,
+        isOpen: raw.isOpen,
+        locked: raw.locked,
+        doorYaw: raw.doorYaw,
+        slots: raw.slots,
+        inv: raw.inv,
+        auth: raw.auth,
+      });
+      buildPieces.push(placed);
+      if (!silent) {
+        rebuildCellIndex();
+        recalculateStability();
+        rebuildBuildMesh();
+      }
+      return true;
+    }
+
+    function applyRemoteRemove(id) {
+      if (id == null) return false;
+      const sid = String(id);
+      const idx = buildPieces.findIndex((p) => String(p.id) === sid);
+      if (idx < 0) return false;
+      const p = buildPieces[idx];
+      if (isNetworkWorldProp(p)) return false;
+      try { pieceMeshCache.delete(p.id); } catch (_) {}
+      buildPieces.splice(idx, 1);
+      recalculateStability();
+      rebuildBuildMesh();
+      return true;
+    }
+
+    function applyWorldSnapshot(pieces) {
+      const incoming = Array.isArray(pieces) ? pieces : [];
+      const want = new Set();
+      for (let i = 0; i < incoming.length; i++) {
+        if (incoming[i] && incoming[i].id != null) want.add(String(incoming[i].id));
+      }
+      const now = performance.now();
+      const keep = [];
+      for (let i = 0; i < buildPieces.length; i++) {
+        const p = buildPieces[i];
+        if (isNetworkWorldProp(p)) {
+          keep.push(p);
+          continue;
+        }
+        if (want.has(String(p.id))) {
+          keep.push(p);
+          continue;
+        }
+        // Keep very recent local placements until the server snapshot catches up
+        if (p.ownerId === LOCAL_PLAYER_ID && (now - (p.placedAt || 0)) < 8000) {
+          keep.push(p);
+          continue;
+        }
+        try { pieceMeshCache.delete(p.id); } catch (_) {}
+      }
+      buildPieces = keep;
+      for (let i = 0; i < incoming.length; i++) {
+        applyRemotePlace(incoming[i], { silent: true });
+      }
+      rebuildCellIndex();
+      recalculateStability();
+      rebuildBuildMesh();
     }
 
     function syncTcInvFromSlots(tc) {
@@ -8427,9 +8619,11 @@ fn fxaa(uv : vec2f) -> vec3f {
     // --- Damage / upgrade / repair ---------------------------------------------
     function destroyPieceAt(index, reason) {
       if (index < 0 || index >= buildPieces.length) return;
+      const removedId = buildPieces[index] && buildPieces[index].id;
       buildPieces.splice(index, 1);
       recalculateStability();
       rebuildBuildMesh();
+      notifyWorldRemove(removedId);
       onHud({ status: "Destruido · " + (reason || "hp") + " · " + buildPieces.length + " pcs" });
     }
 
@@ -9042,6 +9236,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const idx = buildPieces.indexOf(piece);
       if (idx < 0) return false;
       const label = BUILD_LABELS[piece.type] || piece.type;
+      const removedId = piece.id;
       refundDemolishedPiece(piece);
       buildPieces.splice(idx, 1);
       recalculateStability();
@@ -9049,6 +9244,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       closeUpgradeMenu();
       playBuildPlace("remove");
       player.attackPulse = true;
+      notifyWorldRemove(removedId);
       onHud({ status: "Demolido · " + label + " · recursos devueltos" });
       return true;
     }
@@ -9626,6 +9822,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (placingTc) {
         onHud({ status: "Armario colocado · E para upkeep · radio 16 m" });
         clearDeployIfEmpty("tool_cupboard_item");
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingWb) {
@@ -9634,31 +9831,37 @@ fn fxaa(uv : vec2f) -> vec3f {
         clearDeployIfEmpty("workbench_2");
         clearDeployIfEmpty("workbench_3");
         refreshWorkbenchProximity();
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingResearch) {
         onHud({ status: "Mesa investigación · E para investigar" });
         clearDeployIfEmpty("research_table");
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingCamp) {
         onHud({ status: "Fogata · calor 4 m · mete madera con E" });
         clearDeployIfEmpty("campfire");
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingBag) {
         onHud({ status: "Saco listo · respawn aquí al morir" });
         clearDeployIfEmpty("sleeping_bag");
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingBox) {
         onHud({ status: "Caja · E abre · dispersa el botín" });
         clearDeployIfEmpty(snap.type);
+        notifyWorldPlace(placed);
         return true;
       }
       if (placingMetalDoor) {
         onHud({ status: "Puerta metal colocada · 1000 HP" });
         clearDeployIfEmpty("metal_door");
+        notifyWorldPlace(placed);
         return true;
       }
       makeGhostFromRay();
@@ -9668,6 +9871,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           + " · " + st + "% · " + BUILD_TIERS[0].label
           + " · ×" + buildPieces.length,
       });
+      notifyWorldPlace(placed);
       return true;
     };
 
@@ -9687,11 +9891,13 @@ fn fxaa(uv : vec2f) -> vec3f {
         onHud({ status: "Build · no quitar · sostiene otras piezas" });
         return false;
       }
+      const removedId = hitB.piece.id;
       buildPieces.splice(hitB.index, 1);
       recalculateStability();
       rebuildBuildMesh();
       makeGhostFromRay();
       playBuildPlace("remove");
+      notifyWorldRemove(removedId);
       onHud({ status: "Build · removido · " + buildPieces.length + " piezas" });
       return true;
     };
@@ -15106,6 +15312,9 @@ fn fxaa(uv : vec2f) -> vec3f {
       /** Project world meters → stage CSS px (null if behind camera). */
       projectWorld: projectWorldToStage,
       setPeerOverlays,
+      applyRemotePlace,
+      applyRemoteRemove,
+      applyWorldSnapshot,
     };
   }
 

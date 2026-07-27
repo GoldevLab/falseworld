@@ -46,6 +46,7 @@
     let name = guest.name;
     let peers = Object.create(null);
     let listeners = [];
+    let worldListeners = [];
     let reconnectAt = 0;
     let reconnectAttempt = 0;
     let alive = true;
@@ -61,6 +62,14 @@
       for (let i = 0; i < listeners.length; i++) {
         try { listeners[i](list, selfId); } catch (e) {
           console.warn("[FW mp] onPeers", e);
+        }
+      }
+    }
+
+    function emitWorld(msg) {
+      for (let i = 0; i < worldListeners.length; i++) {
+        try { worldListeners[i](msg); } catch (e) {
+          console.warn("[FW mp] onWorld", e);
         }
       }
     }
@@ -134,6 +143,10 @@
           delete peers[msg.id];
           emit();
         }
+        return;
+      }
+      if (msg.t === "world" || msg.t === "place" || msg.t === "remove") {
+        emitWorld(msg);
       }
     }
 
@@ -231,6 +244,7 @@
         if (opts.name) name = saveName(opts.name);
         if (typeof opts.getPose === "function") getPoseFn = opts.getPose;
         if (typeof opts.onPeers === "function") listeners.push(opts.onPeers);
+        if (typeof opts.onWorld === "function") worldListeners.push(opts.onWorld);
         window.__fw = window.__fw || {};
         window.__fw.playerId = selfId;
         window.__fw.playerName = name;
@@ -262,6 +276,17 @@
       },
       requestSync,
       sendPose,
+      sendPlace(piece) {
+        if (!ws || ws.readyState !== 1 || !piece || !piece.id) return;
+        try { ws.send(JSON.stringify({ t: "place", piece })); } catch (_) {}
+      },
+      sendRemove(id) {
+        if (!ws || ws.readyState !== 1 || id == null) return;
+        try { ws.send(JSON.stringify({ t: "remove", id: String(id) })); } catch (_) {}
+      },
+      onWorld(fn) {
+        if (typeof fn === "function") worldListeners.push(fn);
+      },
       getSelfId() { return selfId; },
       getName() { return name; },
       getPeers() { return Object.keys(peers).map((k) => peers[k]); },
@@ -276,6 +301,7 @@
         }
         try { document.removeEventListener("visibilitychange", onVisibility); } catch (_) {}
         listeners = [];
+        worldListeners = [];
         try { ws && ws.close(); } catch (_) {}
         ws = null;
         peers = Object.create(null);

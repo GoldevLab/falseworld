@@ -155,6 +155,18 @@ pub fn page(_req: FlowRequest) -> View {
                             name: (window.__fw && window.__fw.playerName) || undefined,
                             getPose: () => (api && api.getPose ? api.getPose() : null),
                             onPeers: pushRemotes,
+                            onWorld: (msg) => {
+                                try {
+                                    if (!api || !msg) return;
+                                    if (msg.t === "world" && typeof api.applyWorldSnapshot === "function") {
+                                        api.applyWorldSnapshot(msg.pieces || []);
+                                    } else if (msg.t === "place" && typeof api.applyRemotePlace === "function") {
+                                        api.applyRemotePlace(msg.piece);
+                                    } else if (msg.t === "remove" && typeof api.applyRemoteRemove === "function") {
+                                        api.applyRemoteRemove(msg.id);
+                                    }
+                                } catch (e) { console.warn("[FW world]", e); }
+                            },
                         });
                         // Heal asymmetric views (missed join / duplicate-tab races)
                         setInterval(() => {
