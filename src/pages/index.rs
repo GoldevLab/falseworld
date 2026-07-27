@@ -1,3 +1,6 @@
+use crate::inventory::{
+    starter_backpack_json, starter_hotbar_json, BACKPACK_SLOTS, HOTBAR_SLOTS, STACK_SIZE,
+};
 use resuma::prelude::*;
 
 pub fn page(_req: FlowRequest) -> View {
@@ -5,6 +8,17 @@ pub fn page(_req: FlowRequest) -> View {
     let cam_mode = use_signal("follow".to_string());
     let gate_error = use_signal(String::new());
     let unlocked = use_signal("0".to_string());
+
+    // Inventario Resuma (JSON signals → mochila 24 + hotbar 6)
+    let backpack_json = use_signal(starter_backpack_json());
+    let hotbar_json = use_signal(starter_hotbar_json());
+    let hotbar_active = use_signal(0i32);
+    let held_label = use_signal("Pico".to_string());
+    let held_id = use_signal("hatchet_tool".to_string());
+    let inv_meta = format!(
+        "Inventario · {}+{} · stack {}",
+        BACKPACK_SLOTS, HOTBAR_SLOTS, STACK_SIZE
+    );
 
     visible_task!(
         r#"
@@ -18,12 +32,27 @@ pub fn page(_req: FlowRequest) -> View {
 
             let api = null;
             let vrmApi = null;
+            let invApi = null;
             let alive = true;
             let readyToStart = false;
             let started = false;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             let gateHasError = false;
+
+            function syncInvToResuma(payload) {
+                if (!alive || !payload) return;
+                state.backpack_json.set(String(payload.backpackJson || "[]"));
+                state.hotbar_json.set(String(payload.hotbarJson || "[]"));
+                state.hotbar_active.set(Number(payload.activeSlot) || 0);
+                state.held_label.set(String(payload.heldLabel || "vacío"));
+                state.held_id.set(String(payload.heldId || ""));
+            }
+
+            function notifyHeld(held) {
+                if (!api || typeof api.setHeldItem !== "function") return;
+                api.setHeldItem(held);
+            }
 
             function unlockNow() {
                 if (started || gateHasError) return;
@@ -37,8 +66,17 @@ pub fn page(_req: FlowRequest) -> View {
 
                 const g = document.getElementById("fw-load-gate") || gate;
                 if (g) {
+                    // Blur focused START before hiding — avoids aria-hidden + focus warning
+                    try {
+                        if (startBtn && document.activeElement === startBtn) startBtn.blur();
+                        if (g.contains(document.activeElement)) {
+                            document.activeElement.blur();
+                        }
+                    } catch (_) {}
+                    try { canvas.focus({ preventScroll: true }); } catch (_) { try { canvas.focus(); } catch (_) {} }
                     g.classList.add("is-fading");
                     g.style.pointerEvents = "none";
+                    g.setAttribute("inert", "");
                     g.setAttribute("aria-hidden", "true");
                     setTimeout(() => {
                         try {
@@ -53,8 +91,13 @@ pub fn page(_req: FlowRequest) -> View {
                 try {
                     if (vrmApi && typeof vrmApi.setPlayable === "function") vrmApi.setPlayable(true);
                 } catch (_) {}
-                state.status.set("WASD · Shift · C cámara");
+                state.status.set("Click captura mira · WASD · Space salto · Ctrl agachar · Shift correr · C cámara · G mapa");
                 try { canvas.focus(); } catch (_) {}
+                try {
+                  if (canvas.requestPointerLock) canvas.requestPointerLock();
+                } catch (_) {}
+                // Push current held tool into engine
+                if (invApi) notifyHeld(invApi.getActive());
             }
 
             window.__fw = {
@@ -67,6 +110,7 @@ pub fn page(_req: FlowRequest) -> View {
                     if (!started) return;
                     api && api.rebake();
                 },
+                inv: null,
             };
 
             function setPct(pct, label, phase) {
@@ -150,6 +194,33 @@ pub fn page(_req: FlowRequest) -> View {
             }
 
             try {
+                // 3D item icons (Three.js) then inventory UI
+                for (let i = 0; i < 80 && !window.FalseWorldItemIcons; i++) await sleep(40);
+                try {
+                    if (window.FalseWorldItemIcons && window.FalseWorldItemIcons.ready) {
+                        await window.FalseWorldItemIcons.ready();
+                    }
+                } catch (_) {}
+                for (let i = 0; i < 80 && !window.FalseWorldInv; i++) await sleep(40);
+                if (window.FalseWorldInv) {
+                    const stage = document.querySelector(".stage") || document.body;
+                    const mirror = document.querySelector(".fw-inv-mirror");
+                    invApi = window.FalseWorldInv.create(stage, {
+                        backpackJson: (mirror && mirror.getAttribute("data-backpack")) || "[]",
+                        hotbarJson: (mirror && mirror.getAttribute("data-hotbar")) || "[]",
+                        activeSlot: Number((mirror && mirror.getAttribute("data-active")) || 0),
+                        onSync: syncInvToResuma,
+                        onActiveChange: (held) => {
+                            // setHeldItem owns build/deploy ghost state. Do NOT call
+                            // setBuildMode(false) here — consuming a deployable mid-place
+                            // would null ghostCell before tryPlaceGhost finishes.
+                            notifyHeld(held);
+                        },
+                    });
+                    window.__fw.inv = invApi;
+                    // Starter wood/stone already in backpack JSON; keep hotbar for tools only
+                }
+
                 setPct(5, "LOADING… avatar", "load");
                 for (let i = 0; i < 100 && !window.FalseWorldVrm; i++) {
                     await sleep(40);
@@ -160,7 +231,7 @@ pub fn page(_req: FlowRequest) -> View {
                         vrmApi = await window.FalseWorldVrm.create(vrmCanvas, {
                             getPose: () => (api ? api.getPose() : {
                                 x: 0, y: 0, z: 0, yaw: 0, moving: false, sprinting: false,
-                                camMode: "follow",
+                                camMode: "fpv",
                                 eye: [0, 1.6, 4], target: [0, 1.2, 0],
                                 aspect: 1.5, fovDeg: 55, near: 0.1, far: 800,
                             }),
@@ -211,6 +282,12 @@ pub fn page(_req: FlowRequest) -> View {
                         if (h.status && started) state.status.set(String(h.status));
                     },
                     loadChunk: bakeChunk,
+                    inventory: invApi ? {
+                        addItem: (id, qty) => invApi.addItem(id, qty),
+                        tryConsume: (id, qty) => invApi.tryConsume(id, qty),
+                        countOf: (id) => invApi.countOf(id),
+                        getActive: () => invApi.getActive(),
+                    } : null,
                 });
                 api.setControlsEnabled(false);
                 if (typeof api.setPaused === "function") api.setPaused(true);
@@ -219,6 +296,7 @@ pub fn page(_req: FlowRequest) -> View {
                         (vrmApi && typeof vrmApi.getAtlas === "function") ? vrmApi.getAtlas() : null
                     );
                 }
+                if (invApi) notifyHeld(invApi.getActive());
 
                 setPct(55, "LOADING… meadow", "load");
                 await api.boot();
@@ -244,6 +322,7 @@ pub fn page(_req: FlowRequest) -> View {
 
             return () => {
                 alive = false;
+                try { invApi && invApi.destroy(); } catch (_) {}
                 try { vrmApi && vrmApi.destroy(); } catch (_) {}
                 try { api && api.destroy(); } catch (_) {}
                 delete window.__fw;
@@ -253,45 +332,81 @@ pub fn page(_req: FlowRequest) -> View {
         status,
         cam_mode,
         gate_error,
-        unlocked
+        unlocked,
+        backpack_json,
+        hotbar_json,
+        hotbar_active,
+        held_label,
+        held_id
     );
 
     view! {
         <div class="stage" data-unlocked={unlocked}>
             <div class="viewport">
                 {client_component(
-                    ClientComponent::new("fw-meadow-gpu-v129")
+                    ClientComponent::new("fw-item-icons-v3")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-vrm-v31")
+                    ClientComponent::new("fw-inventory-v2")
+                        .class("fw-boot")
+                        .aria_hidden(true)
+                )}
+                {client_component(
+                    ClientComponent::new("fw-explosives-v1")
+                        .class("fw-boot")
+                        .aria_hidden(true)
+                )}
+                {client_component(
+                    ClientComponent::new("fw-progression-v1")
+                        .class("fw-boot")
+                        .aria_hidden(true)
+                )}
+                {client_component(
+                    ClientComponent::new("fw-meadow-gpu-v216")
+                        .class("fw-boot")
+                        .aria_hidden(true)
+                )}
+                {client_component(
+                    ClientComponent::new("fw-meadow-vrm-v41")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 <canvas id="fw-canvas" tabindex="0" aria-label="False World meadow"></canvas>
                 <canvas id="fw-vrm" aria-hidden="true"></canvas>
+                <div class="fw-crosshair" aria-hidden="true"><span class="fw-crosshair-dot"></span></div>
                 <div class="hud" aria-hidden="true">
                     <div class="hud-line">{status}</div>
+                    <div class="hud-held">
+                        "Mano: "{held_label}
+                        " · slot "{hotbar_active}
+                    </div>
                 </div>
+                // Espejo Resuma de inventario (SSR snapshot + señales; UI viva en fw-inventory-v1)
+                <div class="fw-inv-mirror" aria-hidden="true" data-backpack={backpack_json} data-hotbar={hotbar_json} data-active={hotbar_active} data-held={held_id}></div>
                 <div class="vitals" aria-hidden="true">
                     <div class="vital-bar vital-hp">
                         <div class="vital-label">
                             <span>"VIDA"</span>
-                            <span id="fw-hp-text">"1000 / 1000"</span>
+                            <span id="fw-hp-text">"100 / 100"</span>
                         </div>
                         <div class="vital-track">
                             <div id="fw-hp-fill" class="vital-fill" style="width:100%"></div>
                         </div>
                     </div>
-                    <div class="vital-bar vital-mp">
+                    <div class="vital-bar vital-hunger">
                         <div class="vital-label">
-                            <span>"MANA"</span>
-                            <span id="fw-mp-text">"100 / 100"</span>
+                            <span>"HAMBRE"</span>
+                            <span id="fw-hunger-text">"500 / 500"</span>
                         </div>
                         <div class="vital-track">
-                            <div id="fw-mp-fill" class="vital-fill" style="width:100%"></div>
+                            <div id="fw-hunger-fill" class="vital-fill" style="width:100%"></div>
                         </div>
+                    </div>
+                    <div class="vital-meta">
+                        <span id="fw-temp" class="vital-chip">"TEMP · OK"</span>
+                        <span id="fw-comfort" class="vital-chip">"CONFORT · 0%"</span>
                     </div>
                     <div id="fw-fps" class="fps-meter" aria-live="off">"—"</div>
                 </div>
@@ -325,11 +440,23 @@ pub fn page(_req: FlowRequest) -> View {
                         >"[ ··· ]"</button>
                         <div class="load-hints">
                             <span><kbd>"W"</kbd><kbd>"A"</kbd><kbd>"S"</kbd><kbd>"D"</kbd>" MOVE"</span>
-                            <span><kbd>"SHIFT"</kbd>" RUN"</span>
-                            <span><kbd>"M"</kbd>" MAP"</span>
-                            <span><kbd>"C"</kbd>" CAM"</span>
-                            <span><kbd>"MOUSE"</kbd>" LOOK"</span>
+                            <span><kbd>"Space"</kbd>" SALTO"</span>
+                            <span><kbd>"Ctrl"</kbd>" AGACHAR"</span>
+                            <span><kbd>"Shift"</kbd>" CORRER"</span>
+                            <span><kbd>"MMB"</kbd>" RUEDA"</span>
+                            <span><kbd>"RMB"</kbd>" ÓRBITA"</span>
+                            <span><kbd>"1"</kbd>"–"<kbd>"6"</kbd>" HOTBAR"</span>
+                            <span><kbd>"Tab"</kbd>" MOCHILA"</span>
+                            <span><kbd>"Q"</kbd>" CRAFT"</span>
+                            <span><kbd>"G"</kbd>" MAPA"</span>
+                            <span><kbd>"E"</kbd>" USAR"</span>
+                            <span><kbd>"Y"</kbd>" SOFT/HARD"</span>
+                            <span><kbd>"R"</kbd>" GIRA / MEJORA"</span>
+                            <span><kbd>"T"</kbd>" CHAT"</span>
+                            <span><kbd>"F"</kbd>" LUZ"</span>
+                            <span>"TIP: airlock = 2 puertas · soft side hacia dentro"</span>
                         </div>
+                        <p class="load-meta">{inv_meta}</p>
                         <p class="load-err">{gate_error}</p>
                     </div>
                 </div>

@@ -1,11 +1,13 @@
 //! False World — Resuma + WebGPU meadow (False Earth–inspired).
 
-mod pages;
-mod workers;
-
 use pages::PagesRegistry;
 use resuma::prelude::*;
 use serde_json::Value;
+
+mod explosives;
+mod inventory;
+mod pages;
+mod workers;
 
 const CSS: &str = concat!(
     r#"<link rel="preconnect" href="https://fonts.googleapis.com">
@@ -116,12 +118,28 @@ async fn main() -> std::io::Result<()> {
         .with_head(CSS)
         // New ids bust Resuma's year-long immutable client cache
         .client_asset(
-            "fw-meadow-gpu-v129",
-            include_bytes!("../static/client/fw-meadow-gpu-v129.js"),
+            "fw-item-icons-v3",
+            include_bytes!("../static/client/fw-item-icons-v3.js"),
         )
         .client_asset(
-            "fw-meadow-vrm-v31",
-            include_bytes!("../static/client/fw-meadow-vrm-v31.js"),
+            "fw-inventory-v2",
+            include_bytes!("../static/client/fw-inventory-v2.js"),
+        )
+        .client_asset(
+            "fw-explosives-v1",
+            include_bytes!("../static/client/fw-explosives-v1.js"),
+        )
+        .client_asset(
+            "fw-progression-v1",
+            include_bytes!("../static/client/fw-progression-v1.js"),
+        )
+        .client_asset(
+            "fw-meadow-gpu-v216",
+            include_bytes!("../static/client/fw-meadow-gpu-v216.js"),
+        )
+        .client_asset(
+            "fw-meadow-vrm-v41",
+            include_bytes!("../static/client/fw-meadow-vrm-v41.js"),
         )
         .with_public_dir(public_dir)
         .without_pwa()

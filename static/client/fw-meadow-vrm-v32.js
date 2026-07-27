@@ -1,5 +1,5 @@
 /**
- * False World — VRM overlay v31 (feet plant; minimal depth bias for grass occlusion).
+ * False World — VRM overlay v32 (camera-facing loco + lookAt aim).
  * Renders color + linearized depth into a double-height canvas atlas
  * so WebGPU can depth-composite the avatar behind/in front of grass.
  */
@@ -480,12 +480,18 @@ async function create(canvas, opts) {
       wCrouchWalk *= 0.2;
     }
 
+    // Backpedal: reverse walk/run when moving camera-back (S) with body facing camera
+    const backpedal = moving && (pose.moveMz || 0) < -0.2 && Math.abs(pose.moveMx || 0) < 0.85;
+    const locoScale = backpedal ? -1 : (!run && sprinting && moving ? 1.85 : 1);
+    const runScale = backpedal ? -1 : 1;
+    const crouchWalkScale = backpedal ? -1 : 1;
+
     setLoopAction(idle, wIdle, 1);
-    setLoopAction(walk, wWalk, !run && sprinting && moving ? 1.85 : 1);
-    setLoopAction(run, wRun, 1);
+    setLoopAction(walk, wWalk, locoScale);
+    setLoopAction(run, wRun, runScale);
     setLoopAction(jump, wJump, 1);
     setLoopAction(crouchIdle, wCrouchIdle, 1);
-    setLoopAction(crouchWalk, wCrouchWalk || (wCrouch && !crouchIdle ? wCrouch : 0), 1);
+    setLoopAction(crouchWalk, wCrouchWalk || (wCrouch && !crouchIdle ? wCrouch : 0), crouchWalkScale);
     setLoopAction(swim, wSwimMove || (wSwim && !swimIdle ? wSwim : 0), 1);
     setLoopAction(swimIdle, wSwimIdle, 1);
   }
@@ -561,6 +567,7 @@ async function create(canvas, opts) {
   }
 
   const _footWorld = new THREE.Vector3();
+  const _lookAtWorld = new THREE.Vector3();
   const FOOT_BONES = ["leftFoot", "rightFoot", "leftToes", "rightToes"];
 
   function lowestFootY() {
@@ -619,6 +626,12 @@ async function create(canvas, opts) {
     }
 
     if (mixer) mixer.update(dt);
+    // Head/eyes track mouse / build ghost so placement aim is readable
+    if (pose && vrm && modelReady && vrm.lookAt && pose.lookAt) {
+      vrm.lookAt.autoUpdate = false;
+      _lookAtWorld.set(pose.lookAt[0], pose.lookAt[1], pose.lookAt[2]);
+      vrm.lookAt.lookAt(_lookAtWorld);
+    }
     if (vrm) vrm.update(dt);
     if (pose && vrm && modelReady && vrm.scene.visible) {
       plantFeetOnGround(groundY);

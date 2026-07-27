@@ -1,5 +1,5 @@
 /**
- * False World — VRM overlay v31 (feet plant; minimal depth bias for grass occlusion).
+ * False World — VRM overlay v36 (gather hold = continuous LoopRepeat mine/chop, no idle flicker).
  * Renders color + linearized depth into a double-height canvas atlas
  * so WebGPU can depth-composite the avatar behind/in front of grass.
  */
@@ -47,6 +47,8 @@ const DEFAULTS = {
   swimIdleUrl: "/animaciones/SwimIdle.fbx",
   attackUrl: "/animaciones/Attack.fbx",
   gatherUrl: "/animaciones/Gather.fbx",
+  chopUrl: "/animaciones/Chop.fbx",
+  mineUrl: "/animaciones/Mine.fbx",
 };
 
 /** Match meadow WebGPU clip (fw-meadow-gpu NEAR/FAR). */
@@ -395,12 +397,17 @@ async function create(canvas, opts) {
   let swimIdle = null;
   let attack = null;
   let gather = null;
+  let chop = null;
+  let mine = null;
   let walkBlend = 0;
   let runBlend = 0;
   let crouchBlend = 0;
   let swimBlend = 0;
   let jumpBlend = 0;
   let oneshotUntil = 0;
+  let oneshotAction = null;
+  let gatherLoopAction = null;
+  let gatherLoopMode = null;
   let modelReady = false;
   let atlasReady = false;
   let cssW = 2;
@@ -415,18 +422,77 @@ async function create(canvas, opts) {
     action.setEffectiveTimeScale(timeScale != null ? timeScale : 1);
   }
 
-  function triggerOneShot(action, holdMs) {
+  function triggerOneShot(action, minHoldMs) {
     if (!action || !mixer) return;
-    action.reset();
-    action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = true;
+    // Hold-gather owns the body via LoopRepeat — don't interrupt with oneshots
+    if (gatherLoopAction) return;
+    const clip = action.getClip && action.getClip();
+    const clipMs = clip && clip.duration > 0.05 ? clip.duration * 1000 : 0;
+    const holdMs = Math.max(minHoldMs || 0, clipMs || 900);
+    if (oneshotAction && oneshotAction !== action) {
+      try { oneshotAction.fadeOut(0.08); } catch (_) {}
+    }
     action.enabled = true;
     action.paused = false;
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.reset();
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.fadeIn(0.05);
+    action.play();
+    oneshotAction = action;
+    oneshotUntil = performance.now() + holdMs + 40;
+  }
+
+  function actionForGatherMode(mode) {
+    if (mode === "chop") return chop || attack || gather;
+    if (mode === "mine") return mine || attack || gather;
+    if (mode === "gather") return gather || chop || attack;
+    return null;
+  }
+
+  function setGatherLoop(mode) {
+    const action = actionForGatherMode(mode);
+    if (!mode || !action) {
+      if (gatherLoopAction) {
+        try { gatherLoopAction.fadeOut(0.12); } catch (_) {}
+        try {
+          gatherLoopAction.setLoop(THREE.LoopOnce, 1);
+          gatherLoopAction.clampWhenFinished = true;
+        } catch (_) {}
+        gatherLoopAction = null;
+        gatherLoopMode = null;
+      }
+      return;
+    }
+    if (gatherLoopMode === mode && gatherLoopAction === action) {
+      action.enabled = true;
+      action.paused = false;
+      action.setEffectiveWeight(1);
+      action.setEffectiveTimeScale(1);
+      if (!action.isRunning()) action.play();
+      return;
+    }
+    if (oneshotAction) {
+      try { oneshotAction.fadeOut(0.06); } catch (_) {}
+      oneshotAction = null;
+      oneshotUntil = 0;
+    }
+    if (gatherLoopAction && gatherLoopAction !== action) {
+      try { gatherLoopAction.fadeOut(0.08); } catch (_) {}
+    }
+    action.enabled = true;
+    action.paused = false;
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.clampWhenFinished = false;
+    action.reset();
     action.setEffectiveWeight(1);
     action.setEffectiveTimeScale(1);
     action.fadeIn(0.06);
     action.play();
-    oneshotUntil = performance.now() + (holdMs || 450);
+    gatherLoopAction = action;
+    gatherLoopMode = mode;
   }
 
   function syncAnimWeights(pose, dt) {
@@ -438,13 +504,37 @@ async function create(canvas, opts) {
     const jumping = !!pose.jumping;
     const now = performance.now();
 
-    if (pose.attackPulse) {
-      triggerOneShot(attack || gather, 420);
+    const gMode = pose.gatherMode || null;
+    setGatherLoop(gMode);
+
+    // One-shot only when NOT in continuous gather loop (tap attacks / single swing)
+    if (!gatherLoopAction) {
+      if (pose.attackPulse) {
+        triggerOneShot(attack || chop || gather, 900);
+        pose.attackPulse = false;
+      }
+      if (pose.chopPulse) {
+        triggerOneShot(chop || attack || gather, 1550);
+        pose.chopPulse = false;
+      }
+      if (pose.minePulse) {
+        triggerOneShot(mine || attack || gather, 1700);
+        pose.minePulse = false;
+      }
+      if (pose.gatherPulse) {
+        triggerOneShot(gather || chop || attack, 1150);
+        pose.gatherPulse = false;
+      }
+    } else {
       pose.attackPulse = false;
-    }
-    if (pose.gatherPulse) {
-      triggerOneShot(gather || attack, 520);
+      pose.chopPulse = false;
+      pose.minePulse = false;
       pose.gatherPulse = false;
+    }
+
+    if (!gatherLoopAction && oneshotAction && now >= oneshotUntil) {
+      try { oneshotAction.fadeOut(0.18); } catch (_) {}
+      oneshotAction = null;
     }
 
     const locoTarget = moving && !swimming && !jumping ? 1 : 0;
@@ -459,7 +549,8 @@ async function create(canvas, opts) {
     swimBlend += (swimTarget - swimBlend) * Math.min(1, dt * 8);
     jumpBlend += (jumpTarget - jumpBlend) * Math.min(1, dt * 14);
 
-    const oneshot = now < oneshotUntil;
+    const oneshot = !gatherLoopAction && now < oneshotUntil;
+    const gathering = !!gatherLoopAction;
     let wJump = jumpBlend * (jump ? 1 : 0);
     let wSwim = swimBlend * ((swim || swimIdle) ? 1 : 0);
     let wCrouch = crouchBlend * ((crouchIdle || crouchWalk) ? 1 : 0);
@@ -472,20 +563,28 @@ async function create(canvas, opts) {
     let wSwimIdle = wSwim * (moving ? 0 : 1);
     let wIdle = Math.max(0.0001, 1 - wLoco - wCrouch - wSwim - wJump);
 
-    if (oneshot) {
-      wIdle *= 0.15;
-      wWalk *= 0.2;
-      wRun *= 0.2;
-      wCrouchIdle *= 0.2;
-      wCrouchWalk *= 0.2;
+    if (oneshot || gathering) {
+      wIdle = 0.01;
+      wWalk = 0;
+      wRun = 0;
+      wCrouchIdle = 0;
+      wCrouchWalk = 0;
+      wJump *= 0.1;
+      wSwimMove = 0;
+      wSwimIdle = 0;
     }
 
+    const backpedal = moving && (pose.moveMz || 0) < -0.2 && Math.abs(pose.moveMx || 0) < 0.85;
+    const locoScale = backpedal ? -1 : (!run && sprinting && moving ? 1.85 : 1);
+    const runScale = backpedal ? -1 : 1;
+    const crouchWalkScale = backpedal ? -1 : 1;
+
     setLoopAction(idle, wIdle, 1);
-    setLoopAction(walk, wWalk, !run && sprinting && moving ? 1.85 : 1);
-    setLoopAction(run, wRun, 1);
+    setLoopAction(walk, wWalk, locoScale);
+    setLoopAction(run, wRun, runScale);
     setLoopAction(jump, wJump, 1);
     setLoopAction(crouchIdle, wCrouchIdle, 1);
-    setLoopAction(crouchWalk, wCrouchWalk || (wCrouch && !crouchIdle ? wCrouch : 0), 1);
+    setLoopAction(crouchWalk, wCrouchWalk || (wCrouch && !crouchIdle ? wCrouch : 0), crouchWalkScale);
     setLoopAction(swim, wSwimMove || (wSwim && !swimIdle ? wSwim : 0), 1);
     setLoopAction(swimIdle, wSwimIdle, 1);
   }
@@ -561,6 +660,7 @@ async function create(canvas, opts) {
   }
 
   const _footWorld = new THREE.Vector3();
+  const _lookAtWorld = new THREE.Vector3();
   const FOOT_BONES = ["leftFoot", "rightFoot", "leftToes", "rightToes"];
 
   function lowestFootY() {
@@ -619,6 +719,12 @@ async function create(canvas, opts) {
     }
 
     if (mixer) mixer.update(dt);
+    // Head/eyes track mouse / build ghost so placement aim is readable
+    if (pose && vrm && modelReady && vrm.lookAt && pose.lookAt) {
+      vrm.lookAt.autoUpdate = false;
+      _lookAtWorld.set(pose.lookAt[0], pose.lookAt[1], pose.lookAt[2]);
+      vrm.lookAt.lookAt(_lookAtWorld);
+    }
     if (vrm) vrm.update(dt);
     if (pose && vrm && modelReady && vrm.scene.visible) {
       plantFeetOnGround(groundY);
@@ -732,6 +838,20 @@ async function create(canvas, opts) {
   swimIdle = await tryLoadAction(opts.swimIdleUrl || DEFAULTS.swimIdleUrl, "swimIdle", true);
   attack = await tryLoadAction(opts.attackUrl || DEFAULTS.attackUrl, "attack", false);
   gather = await tryLoadAction(opts.gatherUrl || DEFAULTS.gatherUrl, "gather", false);
+  chop = await tryLoadAction(opts.chopUrl || DEFAULTS.chopUrl, "chop", false);
+  mine = await tryLoadAction(opts.mineUrl || DEFAULTS.mineUrl, "mine", false);
+
+  // Meadow hold-loop syncs swing cadence to real clip lengths
+  try {
+    const chopDur = chop && chop.getClip() ? chop.getClip().duration : 0;
+    const mineDur = mine && mine.getClip() ? mine.getClip().duration : 0;
+    const gatherDur = gather && gather.getClip() ? gather.getClip().duration : 0;
+    window.__fwGatherSwing = {
+      chop: Math.max(1.1, chopDur || 1.55),
+      mine: Math.max(1.2, mineDur || 1.7),
+      gather: Math.max(0.9, gatherDur || 1.15),
+    };
+  } catch (_) {}
 
   modelReady = true;
   applyVisibility();
