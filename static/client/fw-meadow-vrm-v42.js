@@ -281,7 +281,8 @@ async function create(canvas, opts) {
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 1, CAM_NEAR, CAM_FAR);
-  scene.add(new THREE.AmbientLight(0xb8c4a8, 1.6));
+  const ambient = new THREE.AmbientLight(0xb8c4a8, 1.6);
+  scene.add(ambient);
   const key = new THREE.DirectionalLight(0xfff2d6, 2.2);
   key.position.set(3, 8, 2);
   const rim = new THREE.DirectionalLight(0xa8c8e8, 0.55);
@@ -289,6 +290,41 @@ async function create(canvas, opts) {
   const fill = new THREE.DirectionalLight(0xd8e8c8, 0.7);
   fill.position.set(0, 3, -2);
   scene.add(key, rim, fill);
+
+  function syncMeadowLights(pose) {
+    if (!pose) return;
+    const dayW = pose.dayW != null ? pose.dayW : 1;
+    const nightW = pose.nightW != null ? pose.nightW : 0;
+    const duskW = pose.duskW != null ? pose.duskW : 0;
+    const amb = pose.amb != null ? pose.amb : 0.2;
+    const lc = pose.lightCol;
+    if (lc && lc.length >= 3) {
+      key.color.setRGB(
+        Math.min(1, lc[0] / Math.max(0.35, Math.max(lc[0], lc[1], lc[2]))),
+        Math.min(1, lc[1] / Math.max(0.35, Math.max(lc[0], lc[1], lc[2]))),
+        Math.min(1, lc[2] / Math.max(0.35, Math.max(lc[0], lc[1], lc[2])))
+      );
+      const inten = Math.min(2.8, 0.55 + Math.hypot(lc[0], lc[1], lc[2]) * 1.15);
+      key.intensity = inten;
+    } else {
+      key.color.setHex(0xfff2d6);
+      key.intensity = 1.4 + dayW * 0.9;
+    }
+    const sun = pose.sunTo;
+    if (sun && sun.length >= 3) {
+      const len = Math.hypot(sun[0], sun[1], sun[2]) || 1;
+      key.position.set((sun[0] / len) * 18, (sun[1] / len) * 18, (sun[2] / len) * 18);
+    }
+    ambient.intensity = 0.55 + amb * 3.2 + nightW * 0.35;
+    ambient.color.setRGB(
+      0.55 + nightW * 0.15,
+      0.62 + duskW * 0.05,
+      0.58 + nightW * 0.25
+    );
+    rim.intensity = 0.25 + nightW * 0.45 + duskW * 0.2;
+    fill.intensity = 0.35 + dayW * 0.4;
+    renderer.toneMappingExposure = 0.85 + dayW * 0.4 + duskW * 0.15;
+  }
 
   // --- Remote players (VRM clones; filled after local model loads) ---
   const remotesRoot = new THREE.Group();
@@ -372,9 +408,9 @@ async function create(canvas, opts) {
       void main() {
         float d = texture2D(tDepth, vUv).x;
         float lin = linearize(d);
-        // Tiny nearer bias only for sole vs terrain z-fight — keep small so grass
-        // in front of the feet can still occlude in the WebGPU merge.
-        lin = max(cameraNear, lin - 0.035);
+        // Minimal nearer bias for sole vs terrain — too much (e.g. 3cm+) lets
+        // feet win over grass blades that should occlude them in the merge.
+        lin = max(cameraNear, lin - 0.008);
         float n = clamp(lin / cameraFar, 0.0, 1.0);
         gl_FragColor = vec4(n, n, n, 1.0);
       }
@@ -762,6 +798,7 @@ async function create(canvas, opts) {
     const pose = getPose();
     let groundY = 0;
     if (pose && vrm && modelReady) {
+      try { syncMeadowLights(pose); } catch (_) {}
       camera.near = pose.near != null ? pose.near : CAM_NEAR;
       camera.far = pose.far != null ? pose.far : CAM_FAR;
       camera.fov = pose.fovDeg || 55;

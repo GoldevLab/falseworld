@@ -13,9 +13,10 @@
       { id: "metal_door", label: "Puerta metal", cost: 30, rarity: "uncommon", unlocks: "metal_door", dependency: "lock", icon: "metal_door", wb: 1 },
       { id: "satchel", label: "Satchel", cost: 60, rarity: "rare", unlocks: "satchel", dependency: "metal_door", icon: "satchel", wb: 1 },
       { id: "rocket", label: "Cohete", cost: 120, rarity: "very_rare", unlocks: "rocket", dependency: "satchel", icon: "rocket", wb: 1 },
+    ],
+    tier2: [
       { id: "c4", label: "C4", cost: 120, rarity: "very_rare", unlocks: "c4", dependency: "rocket", icon: "c4", wb: 2 },
     ],
-    tier2: [],
     tier3: [],
   };
 
@@ -356,7 +357,7 @@
         if (tech) {
           const n = findTechNode(tech);
           return n
-            ? ((DESCRIPTIONS[n.unlocks] || n.label) + " · " + n.cost + " scrap → plano permanente · WB T" + (n.wb || 1))
+            ? ((DESCRIPTIONS[n.unlocks] || n.label) + " · " + n.cost + " scrap → plano permanente · WB T" + Math.max(1, needWbTier(n.wb)))
             : "";
         }
         if (res) {
@@ -415,12 +416,22 @@
         return unlocked.has(id);
       }
 
+      /** Normalize WB tier: NEVER use `x | 1` (turns T2 into T3). */
+      function asWbTier(v) {
+        const n = v | 0;
+        return n >= 1 ? n : 1;
+      }
+      /** Tech/recipe requirement (0 means none). */
+      function needWbTier(v) {
+        return Math.max(0, v | 0);
+      }
+
       /** Effective WB tier: proximity OR the table you opened with E. */
       function effectiveWbTier() {
         const wb = getWb();
         let t = wb.tier | 0;
         if (uiMode === "workbench" && tableForced) {
-          t = Math.max(t, forcedWbTier | 1, 1);
+          t = Math.max(t, asWbTier(forcedWbTier));
         }
         return t;
       }
@@ -488,7 +499,7 @@
           onHud({ status: "Tech Tree · acércate a una Mesa de trabajo (<2 m) o pulsa E" });
           return false;
         }
-        const needTier = node.wb | 1;
+        const needTier = Math.max(1, needWbTier(node.wb));
         const haveTier = effectiveWbTier();
         if (haveTier < needTier) {
           onHud({ status: "Necesitas Workbench T" + needTier + " (tienes T" + haveTier + ")" });
@@ -605,7 +616,8 @@
           const owned = unlockedNodes.has(n.id) || hasBp(n.unlocks);
           const depOk = nodeUnlocked(n, unlockedNodes);
           const haveTier = effectiveWbTier();
-          const atOk = techTreeReady() && (haveTier >= (n.wb | 1));
+          const nodeNeed = Math.max(1, needWbTier(n.wb));
+          const atOk = techTreeReady() && (haveTier >= nodeNeed);
           const recipe = RECIPES.find((r) => r.id === n.unlocks);
           const st = recipe ? recipeState(recipe) : null;
           const canBuy = !owned && depOk && atOk && scrapCount() >= n.cost;
@@ -627,7 +639,7 @@
           } else if (!depOk) {
             sub = "Requiere anterior";
           } else if (!atOk) {
-            sub = "Requiere WB T" + (n.wb | 1);
+            sub = "Requiere WB T" + nodeNeed;
           } else {
             sub = n.cost + " scrap";
           }

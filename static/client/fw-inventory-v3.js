@@ -239,7 +239,10 @@
         const src = cloneStack(getStack(kind, idx));
         if (!src) return false;
         const toBag = kind === "hot";
-        if (toBag && !bagOpen) bagOpen = true;
+        if (toBag && !bagOpen) {
+          bagOpen = true;
+          notifyBagUi();
+        }
         const limit = stackLimit(src.id);
         let left = src.qty;
         setStack(kind, idx, null);
@@ -318,6 +321,7 @@
             bagOpen = true;
             bagEl.classList.add("is-open");
             bagEl.setAttribute("aria-hidden", "false");
+            notifyBagUi();
           }
           const srcBtn = root.querySelector(
             '.fw-slot[data-kind="' + drag.kind + '"][data-idx="' + drag.idx + '"]'
@@ -551,10 +555,19 @@
         return { id: s.id, qty: s.qty, kind: def.kind || "none", label: def.label || s.id };
       }
 
+      function notifyBagUi() {
+        try {
+          if (window.__fw && typeof window.__fw.onBagUiOpen === "function") {
+            window.__fw.onBagUiOpen(!!bagOpen);
+          }
+        } catch (_) {}
+      }
+
       function toggleBag() {
         bagOpen = !bagOpen;
         if (!bagOpen) bagFocus = -1;
         paint();
+        notifyBagUi();
       }
 
       function setActive(i) {
@@ -615,13 +628,14 @@
         }
       })();
 
-      return {
+        return {
         addItem,
         tryConsume,
         countOf,
         getActive,
         setActive,
         toggleBag,
+        isBagOpen: () => !!bagOpen,
         destroy() {
           window.removeEventListener("keydown", onKey, true);
           window.removeEventListener("pointermove", onPointerMove, true);

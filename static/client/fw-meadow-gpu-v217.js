@@ -48,7 +48,7 @@ fn env_sample(dir : vec3f) -> vec3f {
   let c1 = mix(c01, c11, f.x);
   return mix(c0, c1, f.y);
 }
-// Fake PMREM: blur env by roughness (FE uses real pmremTexture)
+// Stable cone blur (no mips — mip chain was blowing foliage to blue/red)
 fn env_sample_rough(dir : vec3f, rough : f32) -> vec3f {
   let d = normalize(dir);
   let blur = clamp(rough, 0.05, 1.0);
@@ -94,33 +94,33 @@ fn sky_fog_col() -> vec3f {
 // Unified distance + height fog (trees/terrain/grass/ocean share this)
 fn apply_fog(rgb : vec3f, world : vec3f) -> vec3f {
   let dist = length(world.xz - frame.eye.xz);
-  let dist_fog = smoothstep(420.0, 1100.0, dist);
-  let h_fog = 1.0 - exp(-max(0.0, (frame.eye.y + 10.0) - world.y) * 0.032);
+  let dist_fog = smoothstep(280.0, 980.0, dist);
+  let h_fog = 1.0 - exp(-max(0.0, (frame.eye.y + 10.0) - world.y) * 0.036);
   let day = smoothstep(0.18, 0.42, frame.tod) * (1.0 - smoothstep(0.58, 0.82, frame.tod));
-  var dens = clamp(dist_fog * 0.82 + h_fog * dist_fog * 0.35, 0.0, 0.94);
-  dens *= mix(1.18, 0.94, day);
+  var dens = clamp(dist_fog * 0.78 + h_fog * dist_fog * 0.42, 0.0, 0.92);
+  dens *= mix(1.15, 0.9, day);
   var out_c = mix(rgb, sky_fog_col(), dens);
   let luma = dot(out_c, vec3f(0.299, 0.587, 0.114));
-  out_c = mix(out_c, vec3f(luma), dist_fog * 0.22);
+  out_c = mix(out_c, vec3f(luma), dist_fog * 0.18);
   return out_c;
 }
 fn env_refl(dir : vec3f) -> vec3f {
-  // Prefer HDR potsdamer (FE scene.environment) — keep more energy for metal grass
-  let hdr = env_sample(dir) * 2.6;
+  // Prefer HDR potsdamer — keep energy but avoid blue blowout
+  let hdr = env_sample(dir) * 2.1;
   let day = smoothstep(0.18, 0.42, frame.tod) * (1.0 - smoothstep(0.58, 0.82, frame.tod));
-  return mix(env_proc(dir) * 0.85, hdr, mix(0.35, 0.92, day));
+  return mix(env_proc(dir) * 0.85, hdr, mix(0.35, 0.88, day));
 }
 fn env_refl_rough(dir : vec3f, rough : f32) -> vec3f {
-  let hdr = env_sample_rough(dir, rough) * 2.6;
+  let hdr = env_sample_rough(dir, rough) * 2.1;
   let day = smoothstep(0.18, 0.42, frame.tod) * (1.0 - smoothstep(0.58, 0.82, frame.tod));
-  return mix(env_proc(dir) * 0.85, hdr, mix(0.35, 0.92, day));
+  return mix(env_proc(dir) * 0.85, hdr, mix(0.35, 0.88, day));
 }
 fn env_irradiance(n : vec3f) -> vec3f {
-  // Diffuse IBL — wider blur
+  // Diffuse IBL — stable 3-lobe (6-lobe + high mips blew out blue sky fill)
   let up = env_refl_rough(vec3f(0.0, 1.0, 0.0), 1.0);
   let nrm = env_refl_rough(n, 0.85);
   let hz = env_refl_rough(normalize(vec3f(n.x, 0.15, n.z)), 0.9);
-  return (nrm * 0.45 + up * 0.35 + hz * 0.2) * 0.55;
+  return (nrm * 0.45 + up * 0.35 + hz * 0.2) * 0.48;
 }
 
 struct ShadowParams {
@@ -222,8 +222,8 @@ fn shadow_factor(world : vec3f, N : vec3f, L : vec3f) -> f32 {
   let w_out = max(0.0, 1.0 - w0 - w1 - w2);
   let sh = s0 * w0 + s1 * w1 + s2 * w2 + w_out;
   // Lift floor so fully-shadowed regions never crush to ink
-  let sh_lift = mix(0.42, 1.0, sh);
-  return mix(1.0, sh_lift, strength * 0.85);
+  let sh_lift = mix(0.36, 1.0, sh);
+  return mix(1.0, sh_lift, strength * 0.9);
 }
 
 fn G_smith(ndl : f32, ndv : f32, rough : f32) -> f32 {
@@ -313,26 +313,31 @@ struct BiomeW {
   desert : f32,
 };
 fn biome_weights(xz : vec2f) -> BiomeW {
+  // Wide noisy ecotones — climate + domain warp, never binary knife-edges
   let s = xz * (1.0 / 90.0);
-  let warp = biome_fbm(s * 0.7) * 0.35;
-  let warp2 = biome_fbm(s * 0.7 + vec2f(4.0, -2.0)) * 0.35;
-  let sw = s + vec2f(warp, warp2);
+  let warp = biome_fbm(s * 0.7) * 0.48;
+  let warp2 = biome_fbm(s * 0.7 + vec2f(4.0, -2.0)) * 0.48;
+  let warp3 = biome_fbm(xz * (1.0 / 52.0) + vec2f(2.3, -7.1)) * 0.14;
+  let sw = s + vec2f(warp, warp2) + vec2f(warp3, -warp3 * 0.7);
   let temp = biome_fbm(sw) * 0.88 + 0.08;
   let moist = biome_fbm(sw + vec2f(17.0, -9.0));
-  let jag = biome_fbm(xz * (1.0 / 42.0)) * 22.0
-    + biome_fbm(xz * (1.0 / 18.0) + vec2f(5.1, -3.7)) * 9.0;
-  let snow_blob = biome_fbm(xz * (1.0 / 110.0));
-  let snow_k = select(0.0, 1.0, (snow_blob > 0.28 && temp < 0.18) || temp < -0.28);
-  // Soft edge on snow patches
-  var snow = snow_k * smoothstep(0.18, 0.38, snow_blob + (0.28 - temp) * 0.35);
-  snow = clamp(snow + select(0.0, 0.85, temp < -0.28), 0.0, 1.0);
-  snow = smoothstep(0.12, 0.88, snow);
+  // Jitter in climate units (~10–40 m feathered borders)
+  let jag = biome_fbm(xz * (1.0 / 36.0)) * 0.20
+    + biome_fbm(xz * (1.0 / 15.0) + vec2f(5.1, -3.7)) * 0.11
+    + biome_fbm(xz * (1.0 / 7.0) + vec2f(-2.4, 8.2)) * 0.055;
+  let snow_blob = biome_fbm(xz * (1.0 / 110.0) + vec2f(jag * 0.5, -jag * 0.35));
+  let t2 = temp + jag * 0.6;
+  let m2 = moist + jag * 0.7;
+  // Continuous snow (no select hard cuts)
+  var snow = smoothstep(0.06, 0.44, snow_blob) * smoothstep(0.34, 0.0, t2);
+  snow = max(snow, smoothstep(-0.02, -0.40, t2));
+  snow = smoothstep(0.04, 0.82, clamp(snow, 0.0, 1.0));
   let rest = 1.0 - snow;
-  var desert = smoothstep(0.32, 0.58, temp) * (1.0 - smoothstep(-0.28, 0.02, moist)) * rest;
-  let wet = smoothstep(0.12, 0.48, moist + jag * 0.0022) * rest;
-  var marsh = wet * smoothstep(-0.08, 0.30, temp);
-  var forest = wet * (1.0 - smoothstep(-0.08, 0.30, temp));
-  var dry = (1.0 - smoothstep(-0.40, -0.05, moist)) * rest;
+  var desert = smoothstep(0.18, 0.64, t2) * (1.0 - smoothstep(-0.42, 0.14, m2)) * rest;
+  let wet = smoothstep(-0.05, 0.58, m2) * rest;
+  var marsh = wet * smoothstep(-0.22, 0.40, t2);
+  var forest = wet * (1.0 - smoothstep(-0.22, 0.40, t2));
+  var dry = (1.0 - smoothstep(-0.58, 0.10, m2)) * rest;
   dry = dry * (1.0 - clamp(desert + wet, 0.0, 1.0));
   var meadow = max(rest - desert - marsh - forest - dry, 0.0);
   var sum = meadow + dry + forest + snow + marsh + desert;
@@ -363,12 +368,12 @@ fn island_edge_w(xz : vec2f) -> f32 {
 
 fn biome_ground(bid : u32) -> vec3f {
   switch bid {
-    case 1u: { return vec3f(0.20, 0.18, 0.09); } // dry
-    case 2u: { return vec3f(0.07, 0.11, 0.05); } // forest
-    case 3u: { return vec3f(0.42, 0.46, 0.50); } // snow (less chalk)
-    case 4u: { return vec3f(0.09, 0.13, 0.07); } // marsh
-    case 5u: { return vec3f(0.38, 0.30, 0.16); } // desert
-    default: { return vec3f(0.14, 0.20, 0.08); } // meadow soil — readable without grass
+    case 1u: { return vec3f(0.22, 0.17, 0.08); } // dry — warm loam
+    case 2u: { return vec3f(0.06, 0.09, 0.04); } // forest — dark humus
+    case 3u: { return vec3f(0.48, 0.52, 0.56); } // snow underpack (not chalk white)
+    case 4u: { return vec3f(0.05, 0.09, 0.055); } // marsh — dark wet peat
+    case 5u: { return vec3f(0.42, 0.32, 0.17); } // desert — warm sand
+    default: { return vec3f(0.11, 0.13, 0.06); } // meadow — earthy loam (not flat green)
   }
 }
 
@@ -383,64 +388,107 @@ fn biome_ground_soft(xz : vec2f) -> vec3f {
 }
 
 @fragment fn fs_terrain(input : TerrainOut) -> @location(0) vec4f {
-  let n = normalize(input.nrm);
+  var n = normalize(input.nrm);
+  let xz = input.world.xz;
+  // Multi-octave micro-normals — dirt clumps, grit, subtle furrows
+  let d0 = biome_fbm(xz * 1.6) * 2.0 - 1.0;
+  let d1 = biome_fbm(xz * 4.8 + vec2f(3.7, -2.1)) * 2.0 - 1.0;
+  let d2 = biome_fbm(xz * 12.0 + vec2f(-1.3, 4.2)) * 2.0 - 1.0;
+  let d3 = biome_fbm(xz * 28.0 + vec2f(8.1, -5.4)) * 2.0 - 1.0;
+  n = normalize(n
+    + vec3f(d0, 0.0, d1) * 0.32
+    + vec3f(d2 * 0.5, abs(d0) * 0.08, d1 * 0.4) * 0.18
+    + vec3f(d3 * 0.35, 0.0, -d3 * 0.28) * 0.10);
   let L = normalize(-frame.sun_dir);
   let V = normalize(frame.eye - input.world);
   let ndl = max(dot(n, L), 0.0);
   let ndv = max(dot(n, V), 0.0);
-  let bw = biome_weights(input.world.xz);
-  let bid = biome_id(input.world.xz);
-  var col = biome_ground_soft(input.world.xz);
-  col = mix(col, col * 1.12, clamp(n.y * 0.5 + 0.2, 0.0, 1.0));
-  // Snow pack / rock by soft snow weight (no hard biome cut)
-  if (bw.snow > 0.04) {
-    let slope = 1.0 - clamp(n.y, 0.0, 1.0);
-    let rock = vec3f(0.28, 0.30, 0.34);
-    let pack = vec3f(0.72, 0.76, 0.82);
-    var snow_col = mix(pack, rock, smoothstep(0.18, 0.55, slope));
-    snow_col = mix(snow_col, vec3f(0.88, 0.91, 0.95), pow(clamp(n.y, 0.0, 1.0), 3.0) * 0.35);
-    col = mix(col, snow_col, smoothstep(0.08, 0.75, bw.snow));
+  let bw = biome_weights(xz);
+  let bid = biome_id(xz);
+  // Macro / meso / micro albedo noise
+  let n_macro = biome_fbm(xz * 0.07) * 0.5 + 0.5;
+  let n_meso = biome_fbm(xz * 0.38 + vec2f(2.1, -4.3)) * 0.5 + 0.5;
+  let n_micro = biome_fbm(xz * 2.4 + vec2f(-1.7, 3.9)) * 0.5 + 0.5;
+  let n_fine = biome_fbm(xz * 9.0 + vec2f(5.2, 1.1)) * 0.5 + 0.5;
+  let n_warp = biome_fbm(xz * 0.55 + vec2f(n_macro * 2.0, n_meso));
+  var col = biome_ground_soft(xz);
+  // Meadow / forest / marsh: layered loam, moss, leaf litter (not flat paint)
+  let grassy = clamp(bw.meadow + bw.forest * 0.95 + bw.marsh * 0.75 + bw.dry * 0.45, 0.0, 1.0);
+  var loam = mix(vec3f(0.09, 0.07, 0.04), vec3f(0.15, 0.13, 0.07), n_macro);
+  loam = mix(loam, vec3f(0.05, 0.09, 0.035), smoothstep(0.35, 0.85, n_meso) * 0.7); // moss
+  loam = mix(loam, vec3f(0.07, 0.06, 0.03), smoothstep(0.55, 0.95, n_warp) * 0.55); // damp hollows
+  loam = mix(loam, vec3f(0.18, 0.14, 0.07), smoothstep(0.70, 0.93, n_micro) * 0.45); // dry litter
+  loam = mix(loam, vec3f(0.22, 0.17, 0.09), smoothstep(0.82, 0.97, n_fine) * 0.35); // twig flecks
+  loam = mix(loam, vec3f(0.04, 0.07, 0.03), bw.forest * (0.35 + n_meso * 0.25)); // humus
+  loam = mix(loam, vec3f(0.04, 0.07, 0.045), bw.marsh * (0.55 + (1.0 - n_macro) * 0.35));
+  loam = mix(loam, vec3f(0.20, 0.16, 0.08), bw.dry * (0.45 + n_macro * 0.2));
+  col = mix(col, loam, grassy * 0.88);
+  // Dry cracks / baked earth
+  let crack = smoothstep(0.62, 0.88, abs(n_warp)) * smoothstep(0.4, 0.9, n_fine);
+  col = mix(col, col * vec3f(0.72, 0.68, 0.55), crack * (bw.dry * 0.7 + bw.desert * 0.55 + bw.meadow * 0.12));
+  // Desert sand ripples
+  if (bw.desert > 0.05) {
+    let ripple = sin(xz.x * 2.8 + xz.y * 0.35 + n_meso * 4.0) * 0.5 + 0.5;
+    let sand = mix(vec3f(0.36, 0.28, 0.14), vec3f(0.52, 0.40, 0.22), ripple * 0.55 + n_micro * 0.25);
+    col = mix(col, sand, smoothstep(0.08, 0.72, bw.desert));
   }
-  // Contact AO under grass — keep soil darker than blades, never chalk
-  let contact_ao = mix(0.70, 1.0, clamp(n.y * 0.7 + 0.2, 0.0, 1.0));
-  col *= contact_ao;
-  let edge = island_edge_w(input.world.xz);
-  // Wide beach: dry sand → wet sand → foam line → shelf
-  let sand_n = biome_fbm(input.world.xz * 0.08) * 0.5 + 0.5;
-  let dry_sand = vec3f(0.78, 0.70, 0.48) * (0.92 + sand_n * 0.12);
-  let wet_sand = vec3f(0.48, 0.42, 0.34);
+  // Snow pack / rock — wide soft blend
+  if (bw.snow > 0.02) {
+    let slope = 1.0 - clamp(n.y, 0.0, 1.0);
+    let rock = vec3f(0.26, 0.28, 0.32);
+    let pack = mix(vec3f(0.58, 0.62, 0.68), vec3f(0.78, 0.82, 0.88), n_meso * 0.4);
+    var snow_col = mix(pack, rock, smoothstep(0.14, 0.52, slope));
+    snow_col = mix(snow_col, vec3f(0.82, 0.86, 0.90), pow(clamp(n.y, 0.0, 1.0), 2.4) * 0.28);
+    // Dirty snow near ecotone
+    snow_col = mix(snow_col, loam * 1.15, (1.0 - smoothstep(0.25, 0.85, bw.snow)) * 0.35);
+    col = mix(col, snow_col, smoothstep(0.02, 0.88, bw.snow));
+  }
+  col = mix(col, col * 1.08, clamp(n.y * 0.45 + 0.15, 0.0, 1.0));
+  let contact_ao = mix(0.54, 1.0, clamp(n.y * 0.65 + 0.18, 0.0, 1.0));
+  col *= contact_ao * mix(0.92, 1.05, n_fine);
+  let edge = island_edge_w(xz);
+  let sand_n = biome_fbm(xz * 0.08) * 0.5 + 0.5;
+  // Wide beach: warm dry berm → darker wet → thin foam at waterline (~0.45)
+  let dry_sand = vec3f(0.84, 0.74, 0.50) * (0.88 + sand_n * 0.16);
+  let wet_sand = vec3f(0.40, 0.34, 0.26);
   let foam_sand = vec3f(0.90, 0.92, 0.94);
-  let dry_w = smoothstep(0.02, 0.32, edge) * (1.0 - smoothstep(0.38, 0.62, edge));
-  let wet_w = smoothstep(0.28, 0.55, edge) * (1.0 - smoothstep(0.62, 0.88, edge));
-  let foam_w = smoothstep(0.48, 0.62, edge) * (1.0 - smoothstep(0.68, 0.86, edge));
-  col = mix(col, dry_sand, dry_w * 0.97);
-  col = mix(col, wet_sand, wet_w * 0.92);
-  col = mix(col, foam_sand, foam_w * 0.55);
-  // Mottled dark soil under grassy biomes — hides flat green between blades
-  let canopy = clamp(bw.meadow * 0.95 + bw.forest * 0.95 + bw.marsh * 0.7 + bw.dry * 0.55, 0.0, 1.0);
-  let soil_n = biome_fbm(input.world.xz * 0.35) * 0.5 + 0.5;
-  let soil_n2 = biome_fbm(input.world.xz * 1.1 + vec2f(3.1, -1.7)) * 0.5 + 0.5;
-  var soil = mix(vec3f(0.05, 0.08, 0.03), vec3f(0.09, 0.14, 0.05), soil_n);
-  soil = mix(soil, vec3f(0.07, 0.11, 0.04), soil_n2 * 0.5);
-  // Tiny litter flecks
-  soil = mix(soil, vec3f(0.12, 0.1, 0.05), smoothstep(0.78, 0.95, soil_n2) * 0.35);
-  col = mix(col, soil, canopy * 0.38 * (1.0 - smoothstep(0.05, 0.42, edge)));
-  if (input.world.y < -0.25) {
-    col = mix(col, vec3f(0.08, 0.18, 0.24), smoothstep(-0.25, -2.2, input.world.y));
+  let dry_w = smoothstep(0.0, 0.12, edge) * (1.0 - smoothstep(0.40, 0.56, edge));
+  let wet_w = smoothstep(0.16, 0.38, edge) * (1.0 - smoothstep(0.52, 0.74, edge));
+  let foam_w = smoothstep(0.38, 0.48, edge) * (1.0 - smoothstep(0.56, 0.74, edge));
+  col = mix(col, dry_sand, dry_w * 0.995);
+  col = mix(col, wet_sand, wet_w * 0.98);
+  col = mix(col, foam_sand, foam_w * 0.75);
+  // Marsh inland puddles / wet mud (after edge is known)
+  if (bw.marsh > 0.2 && edge < 0.1) {
+    let puddle = smoothstep(0.55, 0.92, biome_fbm(xz * 0.55 + vec2f(n_macro, -n_meso)));
+    col = mix(col, vec3f(0.045, 0.065, 0.04), bw.marsh * puddle * 0.85);
+  }
+  // Pebbles / grit — kill meadow grit on the beach so lime green doesn't bleed
+  let beach_mask = 1.0 - smoothstep(0.0, 0.2, edge);
+  let pebble = smoothstep(0.80, 0.96, biome_fbm(xz * 3.5 + vec2f(n_meso, -n_macro)));
+  let grit = smoothstep(0.68, 0.9, biome_fbm(xz * 10.5 + vec2f(1.4, -2.6)));
+  col = mix(col, vec3f(0.26, 0.24, 0.18), pebble * grassy * 0.48 * beach_mask);
+  col = mix(col, col * vec3f(0.88, 0.93, 0.82), grit * grassy * 0.28 * beach_mask);
+  // Underwater shelf: sandy shallows first, then deep silt (not instant teal sludge)
+  if (input.world.y < -0.15) {
+    let uw = smoothstep(-0.15, -2.4, input.world.y);
+    let sand_uw = vec3f(0.28, 0.26, 0.20);
+    let deep_uw = vec3f(0.07, 0.14, 0.18);
+    col = mix(col, mix(sand_uw, deep_uw, uw), uw * 0.92);
   }
   let sun = frame.light_col;
   let hemi = env_irradiance(n);
   let sh = shadow_factor(input.world, n, L);
-  // Soft ground: ambient fill kills hard lit/unlit CSM patches under grass
-  let sh_g = mix(1.0, sh, 0.45);
-  var rgb = col * (frame.amb * 1.15 + ndl * 0.55 * sh_g) * sun + col * hemi * (0.5 + frame.amb * 0.35);
-  // Wet sand sheen on the beach
+  let sh_g = mix(1.0, sh, 0.52);
+  var rgb = col * (frame.amb * 1.02 + ndl * 0.72 * sh_g) * sun + col * hemi * (0.34 + frame.amb * 0.28);
+  // Soft contact darkening under canopy density
+  rgb *= mix(0.9, 1.0, 1.0 - grassy * 0.12 * (1.0 - n.y));
   if (wet_w > 0.15) {
     let h = normalize(L + V);
     let ndh = max(dot(n, h), 0.0);
     rgb += sun * pow(ndh, 72.0) * wet_w * 0.35 * sh;
   }
-  if (bw.snow > 0.2 || bw.marsh > 0.35 || bid == 3u || bid == 4u) {
+  if (bw.snow > 0.15 || bw.marsh > 0.3 || bid == 3u || bid == 4u) {
     let h = normalize(L + V);
     let ndh = max(dot(n, h), 0.0);
     let rough = select(0.55, 0.35, bw.snow > 0.35);
@@ -657,15 +705,14 @@ fn grass_vs(vid : u32, iid : u32, segs : f32) -> GrassOut {
     }
     if (dist < pr) {
       // Sharp edge so the ring around feet stays small
-      let fall = pow(smoothstep(pr, 0.0, dist), 1.75);
-      // Stronger core under the body (~shin width)
-      let core = pow(smoothstep(pr * 0.55, 0.0, dist), 1.35);
-      // pushAmount ~0.55 (taller grass than FE 0.4)
-      let str = fall * 0.55 + core * 0.25;
+      let fall = pow(smoothstep(pr, 0.0, dist), 1.65);
+      // Stronger core under the body (~shin / thigh width) — clears waist-high reeds
+      let core = pow(smoothstep(pr * 0.72, 0.0, dist), 1.25);
+      let str = fall * 0.72 + core * 0.42;
       push_x += dir.x * str;
       push_z += dir.y * str;
-      // FE flattenAmount ~0.05 — keep light so blades still read as grass
-      flatten_w = max(flatten_w, fall * 0.10 + core * 0.08);
+      // Stronger flatten so pantano grass doesn't swallow the avatar
+      flatten_w = max(flatten_w, fall * 0.22 + core * 0.28);
     }
   }
   // Trail footprints — narrower than live radius, softer
@@ -722,7 +769,7 @@ fn grass_vs(vid : u32, iid : u32, segs : f32) -> GrassOut {
   tip_col = mix(tip_col, vec3f(0.22, 0.28, 0.12), bw.dry * 0.25);
   tip_col = mix(tip_col, vec3f(0.11, 0.24, 0.16), bw.marsh * 0.22);
   tip_col = mix(tip_col, vec3f(0.11, 0.24, 0.12), bw.forest * 0.18);
-  tip_col = mix(tip_col, vec3f(0.78, 0.82, 0.86), bw.snow);
+  tip_col = mix(tip_col, vec3f(0.72, 0.76, 0.82), smoothstep(0.08, 0.85, bw.snow));
   var col = mix(vec3f(0.04, 0.07, 0.03), tip_col, pow(t, 0.95));
   col *= mix(0.88, 1.12, clump) * mix(0.85, 1.15, seed);
 
@@ -753,6 +800,15 @@ fn grass_vs(vid : u32, iid : u32, segs : f32) -> GrassOut {
 }
 @vertex fn vs_grass2(@builtin(vertex_index) vid : u32, @builtin(instance_index) iid : u32) -> GrassOut {
   return grass_vs(vid, iid, 2.0);
+}
+// Near-field grass depth into CSM (LOD0 verts = 15-seg)
+@vertex fn vs_grass_shadow(@builtin(vertex_index) vid : u32, @builtin(instance_index) iid : u32) -> GrassOut {
+  return grass_vs(vid, iid, 15.0);
+}
+@fragment fn fs_shadow_grass(input : GrassOut) {
+  // Drop wispy tips so shadow maps stay solid underfoot
+  if (input.height_t > 0.88 && abs(input.side_uv - 0.5) > 0.32) { discard; }
+  if (input.dist_fade > 0.92) { discard; }
 }
 
 @fragment fn fs_grass(input : GrassOut) -> @location(0) vec4f {
@@ -810,7 +866,9 @@ fn grass_vs(vid : u32, iid : u32, segs : f32) -> GrassOut {
   let sss = albedo * vec3f(0.45, 0.7, 0.28) * pow(back, 1.4) * (1.0 - t * 0.35)
     * mix(0.1, 0.2, seed) * sun;
 
-  var rgb = hemi + diffuse * sun + sky_fill + sun * velvet + sss;
+  var rgb = hemi + diffuse * sun * mix(0.55, 1.0, sh) + sky_fill
+    + sun * velvet * mix(0.5, 1.0, sh)
+    + sss * mix(0.65, 1.0, sh);
   rgb = rgb * mix(0.75, 1.02, smoothstep(0.05, 0.92, t));
   rgb = rgb * mix(1.0, 0.82, far);
 
@@ -909,6 +967,8 @@ struct RoseOut {
   if (kind > 3.5 && kind < 4.5) { sx = 0.11 * scale; sy = 0.28 * scale; }
   else if (kind > 2.5 && kind < 3.5) { sx = 0.12 * scale; sy = 0.22 * scale; }
   else if (kind > 4.5 && kind < 5.5) { sx = 0.12 * scale; sy = 0.12 * scale; }
+  else if (kind > 8.5 && kind < 9.5) { sx = 0.22 * scale; sy = 0.38 * scale; } // fern
+  else if (kind > 9.5 && kind < 10.5) { sx = 0.18 * scale; sy = 0.08 * scale; } // litter
   let sway = sin(frame.time * (1.4 + phase * 0.5) + phase * 6.28) * 0.04 * scale;
   let world = input.center
     + right * (input.corner.x * sx + sway * input.corner.y)
@@ -987,12 +1047,39 @@ struct RoseOut {
     petal_col = vec3f(0.94, 0.95, 0.97);
     center_col = vec3f(0.75, 0.82, 0.55);
     center_r = 0.14;
-  } else {
+  } else if (kind < 8.5) {
     // Marsh lily — pale pink / cream
     petals = 5.0; petal_amp = 0.4; petal_base = 0.58;
     petal_col = mix(vec3f(0.95, 0.72, 0.82), vec3f(0.95, 0.9, 0.7), fract(phase * 1.3));
     center_col = vec3f(0.9, 0.7, 0.2);
     center_r = 0.2;
+  } else if (kind < 9.5) {
+    // Fern frond under trees
+    let lobe = abs(sin(u * 9.0 + v * 2.0 + phase));
+    let stem = 1.0 - smoothstep(0.04, 0.14, abs(u));
+    let blade = smoothstep(-1.0, -0.15, v) * smoothstep(1.05, 0.1, v)
+      * (1.0 - smoothstep(0.35 + (1.0 - abs(v)) * 0.45, 0.72, abs(u)));
+    mask = max(stem * 0.7, blade * (0.55 + 0.45 * lobe));
+    col = mix(vec3f(0.12, 0.28, 0.10), vec3f(0.22, 0.42, 0.16), lobe * 0.5 + (v * 0.5 + 0.5) * 0.3);
+    if (mask < 0.12) { discard; }
+    let Lf = normalize(-frame.sun_dir);
+    let ndlf = 0.5 + 0.5 * max(dot(normalize(vec3f(u, 0.5, 0.6)), Lf), 0.0);
+    var rgbf = col * frame.light_col * (frame.amb + ndlf * 0.55);
+    rgbf = apply_fog(rgbf, input.world);
+    return vec4f(clamp(rgbf, vec3f(0.0), vec3f(2.5)), clamp(mask, 0.0, 1.0));
+  } else {
+    // Leaf litter on forest floor (kind ~10)
+    let leaf = 1.0 - smoothstep(0.45, 0.78, length(vec2f(u * 1.1, v * 0.75)));
+    let vein = 1.0 - smoothstep(0.02, 0.1, abs(u + v * 0.15));
+    mask = leaf * (0.75 + 0.25 * vein);
+    col = mix(vec3f(0.28, 0.18, 0.08), vec3f(0.42, 0.28, 0.12), fract(phase * 2.3));
+    col = mix(col, vec3f(0.35, 0.22, 0.1), vein * 0.35);
+    if (mask < 0.14) { discard; }
+    let Ll = normalize(-frame.sun_dir);
+    let ndll = 0.45 + 0.55 * max(dot(normalize(vec3f(0.1, 1.0, 0.2)), Ll), 0.0);
+    var rgbl = col * frame.light_col * (frame.amb * 1.1 + ndll * 0.4);
+    rgbl = apply_fog(rgbl, input.world);
+    return vec4f(clamp(rgbl, vec3f(0.0), vec3f(2.5)), clamp(mask * 0.85, 0.0, 1.0));
   }
 
   let petal_r = petal_base + petal_amp * cos(ang * petals + phase * 2.0);
@@ -1015,6 +1102,290 @@ struct RoseOut {
 }
 
 
+
+
+// Bird / butterfly — tree-to-tree routes
+// fdata: species, scale, phase, tripHz (A↔B cycles per second)
+// species: 0 sparrow 1 bluebird 2 crow 3 butterfly
+struct BirdIn {
+  @location(0) from_p : vec3f,
+  @location(1) corner : vec2f,
+  @location(2) fdata : vec4f,
+  @location(3) to_p : vec3f,
+};
+struct BirdOut {
+  @builtin(position) clip : vec4f,
+  @location(0) uv : vec2f,
+  @location(1) fdata : vec4f,
+  @location(2) world : vec3f,
+  @location(3) anim : vec3f, // flap, bank, view_side
+};
+@vertex fn vs_bird(input : BirdIn) -> BirdOut {
+  var o : BirdOut;
+  let species = input.fdata.x;
+  let scale = input.fdata.y;
+  let phase = input.fdata.z;
+  let trip_hz = max(input.fdata.w, 0.04);
+  let mid = (input.from_p + input.to_p) * 0.5;
+  let dist_xz = length(mid.xz - frame.eye.xz);
+  if (dist_xz > 165.0) {
+    o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+    o.uv = input.corner;
+    o.fdata = input.fdata;
+    o.world = mid;
+    o.anim = vec3f(0.0);
+    return o;
+  }
+  let is_bfly = species > 2.5;
+  let span = length(input.to_p - input.from_p);
+  // Timeline: perch → cruise → perch → return
+  let cycle = fract(frame.time * trip_hz + phase);
+  var a = input.from_p;
+  var b = input.to_p;
+  var u_lin = 0.0;
+  var flying = 0.0;
+  // 0.00–0.08 perch A · 0.08–0.48 fly A→B · 0.48–0.56 perch B · 0.56–1.00 fly B→A
+  if (cycle < 0.08) {
+    u_lin = 0.0; flying = 0.0;
+  } else if (cycle < 0.48) {
+    u_lin = (cycle - 0.08) / 0.40;
+    flying = 1.0;
+  } else if (cycle < 0.56) {
+    a = input.to_p; b = input.from_p;
+    u_lin = 0.0; flying = 0.0;
+  } else {
+    a = input.to_p; b = input.from_p;
+    u_lin = (cycle - 0.56) / 0.44;
+    flying = 1.0;
+  }
+  // Ease in/out so they don't pop off the branch
+  let u = u_lin * u_lin * (3.0 - 2.0 * u_lin);
+  let u2 = clamp(u_lin * 2.0, 0.0, 1.0); // for arc peak mid-flight
+  let chord = b - a;
+  // Flight arc — higher on longer hops
+  let arc_h = select(1.1 + span * 0.06, 0.35 + span * 0.04, is_bfly) * flying;
+  let arc = sin(u * 3.14159265) * arc_h;
+  // Slight lateral weave mid-route (not a circle)
+  let side_dir = normalize(cross(vec3f(0.0, 1.0, 0.0), chord + vec3f(0.001, 0.0, 0.0)));
+  let weave = sin(u * 3.14159265) * sin(frame.time * select(1.6, 3.2, is_bfly) + phase) * select(0.35, 0.55, is_bfly) * flying;
+  var world_c = mix(a, b, u) + vec3f(0.0, arc, 0.0) + side_dir * weave;
+  // Tiny hop bob while perched
+  if (flying < 0.5) {
+    world_c.y += sin(frame.time * 2.2 + phase * 5.0) * 0.03;
+  }
+
+  // Heading along path
+  let du = max(u_lin, 0.02);
+  let u_next = min(u_lin + 0.04, 1.0);
+  let un = u_next * u_next * (3.0 - 2.0 * u_next);
+  let p1 = mix(a, b, u) + vec3f(0.0, sin(u * 3.14159265) * arc_h, 0.0);
+  let p2 = mix(a, b, un) + vec3f(0.0, sin(un * 3.14159265) * arc_h, 0.0);
+  var fwd = p2 - p1;
+  if (flying < 0.5) {
+    fwd = chord;
+  }
+  let fl = length(fwd);
+  if (fl < 1e-4) { fwd = vec3f(1.0, 0.0, 0.0); } else { fwd = fwd / fl; }
+
+  let to_eye = normalize(frame.eye - world_c);
+  var cam_r = cross(vec3f(0.0, 1.0, 0.0), to_eye);
+  if (length(cam_r) < 1e-4) { cam_r = vec3f(1.0, 0.0, 0.0); }
+  cam_r = normalize(cam_r);
+  let cam_u = normalize(cross(to_eye, cam_r));
+  let view_side = clamp(dot(fwd, cam_r), -1.0, 1.0);
+
+  // Flap hard in cruise, soft on perch
+  let flap_rate = select(14.0 + fract(phase * 2.7) * 5.0, 20.0 + fract(phase) * 8.0, is_bfly);
+  var flap = sin(frame.time * flap_rate + phase * 12.0);
+  flap = mix(flap * 0.15, flap, flying * 0.85 + 0.15);
+  let bank = clamp(dot(side_dir, fwd) * 0.0 + weave * 0.15, -0.3, 0.3) * flying;
+
+  let wing_span = select(0.55 + 0.55 * abs(flap), 0.4 + 0.7 * abs(flap), is_bfly);
+  var sx = select(0.34, 0.20, is_bfly) * scale * wing_span;
+  var sy = select(0.22, 0.16, is_bfly) * scale;
+  let tip_lift = flap * select(2.0, 1.5, is_bfly) * sy;
+  let cu = input.corner.x;
+  let cv = input.corner.y;
+  let fly_r = normalize(mix(cam_r, normalize(cross(vec3f(0.0, 1.0, 0.0), fwd)), 0.5 * flying));
+  let fly_u = normalize(mix(cam_u, vec3f(0.0, 1.0, 0.0), 0.2));
+  let world = world_c
+    + fly_r * (cu * sx)
+    + fly_u * (cv * sy + abs(cu) * tip_lift + cu * bank * sy);
+
+  o.clip = frame.view_proj * vec4f(world, 1.0);
+  o.uv = input.corner;
+  o.fdata = input.fdata;
+  o.world = world;
+  o.anim = vec3f(flap, bank, view_side);
+  return o;
+}
+
+@fragment fn fs_bird(input : BirdOut) -> @location(0) vec4f {
+  let species = input.fdata.x;
+  let phase = input.fdata.z;
+  let flap = input.anim.x;
+  let view_side = input.anim.z;
+  let is_bfly = species > 2.5;
+  // Local UV with wing fold / profile squash
+  var u = input.uv.x;
+  var v = input.uv.y;
+  let profile = abs(view_side); // 0 = nose-on, 1 = full side
+  if (!is_bfly) {
+    // Compress width when head-on; stretch when side-on
+    u *= mix(1.35, 0.78, profile);
+    v *= mix(0.9, 1.08, profile);
+  } else {
+    // Wings clap open/closed each beat
+    let fold = 1.0 - abs(flap);
+    u *= mix(0.85, 1.85, fold);
+    v += flap * 0.08;
+  }
+
+  var mask = 0.0;
+  var col = vec3f(0.4, 0.32, 0.24);
+  var soft = 0.0;
+
+  if (is_bfly) {
+    // Four-wing butterfly: fore + hind lobes, body, eyespots, veins
+    let fold = 1.0 - abs(flap);
+    let wu = u;
+    let wv = v + 0.05;
+    let foreL = length(vec2f((wu + 0.32) * 1.05, (wv - 0.12) * 1.15));
+    let foreR = length(vec2f((wu - 0.32) * 1.05, (wv - 0.12) * 1.15));
+    let hindL = length(vec2f((wu + 0.26) * 1.2, (wv + 0.28) * 1.35));
+    let hindR = length(vec2f((wu - 0.26) * 1.2, (wv + 0.28) * 1.35));
+    let wingL = max(
+      1.0 - smoothstep(0.42, 0.72, foreL),
+      1.0 - smoothstep(0.32, 0.58, hindL)
+    );
+    let wingR = max(
+      1.0 - smoothstep(0.42, 0.72, foreR),
+      1.0 - smoothstep(0.32, 0.58, hindR)
+    );
+    var wings = max(wingL, wingR);
+    // Notch between fore/hind
+    wings *= 1.0 - 0.18 * smoothstep(0.08, 0.0, abs(wv - 0.05)) * smoothstep(0.15, 0.45, abs(wu));
+    let body = (1.0 - smoothstep(0.045, 0.11, abs(wu)))
+      * (1.0 - smoothstep(0.72, 0.95, abs(wv)));
+    // Antennae
+    let antL = 1.0 - smoothstep(0.03, 0.08, length(vec2f(wu + 0.06 - wv * 0.12, wv + 0.78)));
+    let antR = 1.0 - smoothstep(0.03, 0.08, length(vec2f(wu - 0.06 + wv * 0.12, wv + 0.78)));
+    mask = max(max(wings, body * 0.95), max(antL, antR) * 0.65);
+    soft = wings;
+
+    let hue = fract(phase * 3.71);
+    var base = mix(vec3f(0.92, 0.48, 0.12), vec3f(0.35, 0.22, 0.72), smoothstep(0.25, 0.75, hue));
+    base = mix(base, vec3f(0.95, 0.88, 0.28), smoothstep(0.55, 0.9, hue) * 0.65);
+    // Wing veins
+    let vein = abs(sin(wu * 14.0 + wv * 3.0)) * abs(sin(wv * 11.0 - wu * 2.0));
+    base = mix(base * 0.72, base, smoothstep(0.15, 0.55, vein));
+    // Eyespots
+    let spotL = 1.0 - smoothstep(0.06, 0.14, length(vec2f(wu + 0.38, wv - 0.08)));
+    let spotR = 1.0 - smoothstep(0.06, 0.14, length(vec2f(wu - 0.38, wv - 0.08)));
+    let spots = max(spotL, spotR);
+    base = mix(base, vec3f(0.08, 0.06, 0.1), spots * 0.85);
+    base = mix(base, vec3f(0.95, 0.92, 0.75), spots * spots * 0.55);
+    // Body darker
+    col = mix(base, vec3f(0.12, 0.1, 0.08), body * 0.75);
+    // Translucent wing rim toward sun
+    col *= 0.78 + 0.22 * (1.0 - fold);
+    col = mix(col, col * vec3f(1.15, 1.08, 0.95), abs(flap) * 0.2);
+  } else {
+    // Side-profile songbird: head, body, swept wing, tail, beak, eye
+    let side = sign(view_side + 1e-4);
+    // Flip so beak tends toward flight direction on screen
+    let uu = u * side;
+    let vv = v;
+
+    // Torso (teardrop, thicker aft)
+    let body_p = vec2f((uu + 0.05) * 1.35, vv * 1.7 + 0.05);
+    let body = 1.0 - smoothstep(0.32, 0.58, length(body_p) * (1.0 + max(uu, 0.0) * 0.25));
+
+    // Head
+    let head = 1.0 - smoothstep(0.16, 0.32, length(vec2f((uu - 0.38) * 1.4, (vv - 0.08) * 1.5)));
+
+    // Beak
+    var beak = 1.0 - smoothstep(0.0, 0.22, length(vec2f((uu - 0.62) * 2.6, (vv + 0.02) * 4.2)));
+    beak *= smoothstep(-0.15, 0.05, uu);
+
+    // Tail fan behind
+    var tail = 1.0 - smoothstep(0.15, 0.55, length(vec2f((uu + 0.55) * 1.1, vv * 2.4)));
+    tail *= (1.0 - smoothstep(-0.05, 0.15, uu)) * (0.7 + 0.3 * (1.0 - abs(vv) * 1.2));
+
+    // Wing — swept ellipse; signed flap lifts / drops the wing
+    let wing_v = vv - flap * 0.42 - 0.02;
+    var wing = 1.0 - smoothstep(0.18, 0.50, length(vec2f(uu * 0.5 + 0.05, wing_v * 1.85 + 0.12)));
+    wing *= smoothstep(-0.55, 0.15, uu) * smoothstep(0.7, 0.15, uu);
+
+    // Belly / back separation for shading later
+    let belly = smoothstep(0.05, -0.25, vv);
+
+    mask = max(max(max(body, head), max(wing * 0.95, tail * 0.85)), beak * 0.75);
+    soft = max(wing, tail);
+
+    // Feather edge noise
+    let edge_n = biome_value_noise(vec2f(uu * 6.0 + phase, vv * 5.0 + flap));
+    mask *= 0.9 + 0.1 * edge_n;
+
+    // Species palettes
+    var back = vec3f(0.38, 0.28, 0.18);
+    var breast = vec3f(0.72, 0.62, 0.48);
+    var wing_c = vec3f(0.32, 0.24, 0.16);
+    var beak_c = vec3f(0.55, 0.35, 0.12);
+    if (species < 0.5) {
+      // Sparrow
+      back = vec3f(0.42, 0.30, 0.18);
+      breast = vec3f(0.78, 0.68, 0.52);
+      wing_c = vec3f(0.28, 0.20, 0.12);
+      beak_c = vec3f(0.35, 0.25, 0.12);
+    } else if (species < 1.5) {
+      // Bluebird
+      back = vec3f(0.22, 0.42, 0.72);
+      breast = vec3f(0.85, 0.55, 0.28);
+      wing_c = vec3f(0.15, 0.30, 0.58);
+      beak_c = vec3f(0.55, 0.35, 0.15);
+    } else {
+      // Crow
+      back = vec3f(0.10, 0.10, 0.12);
+      breast = vec3f(0.16, 0.16, 0.18);
+      wing_c = vec3f(0.06, 0.06, 0.08);
+      beak_c = vec3f(0.12, 0.12, 0.12);
+    }
+
+    col = mix(back, breast, belly * 0.85);
+    col = mix(col, wing_c, wing * 0.65);
+    col = mix(col, beak_c, beak * 0.9);
+    // Tail slightly darker
+    col = mix(col, col * 0.75, tail * 0.4);
+    // Eye
+    let eye = 1.0 - smoothstep(0.035, 0.08, length(vec2f(uu - 0.42, vv - 0.12)));
+    col = mix(col, vec3f(0.05, 0.05, 0.06), eye * 0.95);
+    let glint = 1.0 - smoothstep(0.012, 0.03, length(vec2f(uu - 0.405, vv - 0.135)));
+    col = mix(col, vec3f(0.95, 0.95, 0.9), glint * eye);
+    // Soft feather highlight on back
+    col *= 0.82 + 0.18 * (1.0 - belly) * (0.5 + 0.5 * edge_n);
+  }
+
+  // Soft AA edge
+  let edge = smoothstep(0.08, 0.28, mask);
+  if (edge < 0.02) { discard; }
+
+  let L = normalize(-frame.sun_dir);
+  let nrm = normalize(vec3f(u * 0.9, 0.55 + flap * 0.15, 0.65));
+  let ndl = 0.48 + 0.52 * max(dot(nrm, L), 0.0);
+  // Rim light — reads against sky
+  let ndv = max(dot(nrm, normalize(frame.eye - input.world)), 0.0);
+  let rim = pow(1.0 - ndv, 2.4) * 0.5;
+  var rgb = col * frame.light_col * (frame.amb * 0.85 + ndl * 0.75);
+  rgb += frame.light_col * rim * select(0.35, 0.55, is_bfly);
+  rgb += env_irradiance(nrm) * col * 0.18;
+  // Subtle translucency on wing membranes / feathers
+  rgb += frame.light_col * soft * abs(flap) * select(0.04, 0.08, is_bfly) * col;
+  rgb = apply_fog(rgb, input.world);
+  let dist = length(input.world.xz - frame.eye.xz);
+  let fade = 1.0 - smoothstep(110.0, 155.0, dist);
+  return vec4f(clamp(rgb, vec3f(0.0), vec3f(3.0)), clamp(edge * fade, 0.0, 1.0));
+}
 
 // Build pieces — wood volumes + Rust-like blue ghost
 struct BuildIn {
@@ -1453,17 +1824,17 @@ struct TreeOut {
     var trunk_h = 3.0 * scale;
     var half0 = 0.28;
     var half1 = 0.12;
-    if (species > 0.5 && species < 1.5) { trunk_h = 2.4 * scale; half0 = 0.20; half1 = 0.08; } // pine
-    else if (species > 5.5 && species < 6.5) { trunk_h = 2.6 * scale; half0 = 0.22; half1 = 0.09; } // snow fir
-    else if (species > 1.5 && species < 2.5) { trunk_h = 3.1 * scale; half0 = 0.24; half1 = 0.10; } // maple
-    else if (species > 2.5 && species < 3.5) { trunk_h = 3.15 * scale; half0 = 0.34; half1 = 0.12; } // willow
-    else if (species > 3.5 && species < 4.5) { trunk_h = 1.5 * scale; half0 = 0.14; half1 = 0.06; } // scrub
-    else if (species > 4.5 && species < 5.5) { trunk_h = 2.5 * scale; half0 = 0.26; half1 = 0.20; } // cactus
-    else if (species > 6.5 && species < 7.5) { trunk_h = 3.45 * scale; half0 = 0.15; half1 = 0.055; } // birch slender
-    else if (species > 7.5 && species < 8.5) { trunk_h = 4.35 * scale; half0 = 0.17; half1 = 0.06; } // poplar tall
-    else if (species > 8.5 && species < 9.5) { trunk_h = 2.85 * scale; half0 = 0.26; half1 = 0.11; } // cedar
-    else if (species > 9.5 && species < 10.5) { trunk_h = 3.8 * scale; half0 = 0.22; half1 = 0.16; } // palm
-    else { trunk_h = 3.05 * scale; half0 = 0.36; half1 = 0.14; } // oak
+    if (species > 0.5 && species < 1.5) { trunk_h = 4.6 * scale; half0 = 0.22; half1 = 0.09; } // pine — long bole
+    else if (species > 5.5 && species < 6.5) { trunk_h = 4.9 * scale; half0 = 0.24; half1 = 0.10; } // snow fir
+    else if (species > 1.5 && species < 2.5) { trunk_h = 5.1 * scale; half0 = 0.26; half1 = 0.11; } // maple
+    else if (species > 2.5 && species < 3.5) { trunk_h = 4.8 * scale; half0 = 0.36; half1 = 0.13; } // willow
+    else if (species > 3.5 && species < 4.5) { trunk_h = 2.35 * scale; half0 = 0.16; half1 = 0.07; } // scrub — short stem
+    else if (species > 4.5 && species < 5.5) { trunk_h = 2.7 * scale; half0 = 0.28; half1 = 0.20; } // cactus
+    else if (species > 6.5 && species < 7.5) { trunk_h = 5.2 * scale; half0 = 0.16; half1 = 0.06; } // birch slender
+    else if (species > 7.5 && species < 8.5) { trunk_h = 6.0 * scale; half0 = 0.18; half1 = 0.065; } // poplar tall
+    else if (species > 8.5 && species < 9.5) { trunk_h = 5.0 * scale; half0 = 0.28; half1 = 0.12; } // cedar
+    else if (species > 9.5 && species < 10.5) { trunk_h = 5.4 * scale; half0 = 0.24; half1 = 0.16; } // palm
+    else { trunk_h = 4.85 * scale; half0 = 0.38; half1 = 0.15; } // oak — clear timber bole
     let flare = mix(1.45, 1.0, smoothstep(0.0, 0.2, t));
     let half_w = mix(half0, half1, pow(t, 0.9)) * scale * flare;
     let lean = (phase - 0.5) * 0.08 * t * trunk_h;
@@ -1516,9 +1887,9 @@ struct TreeOut {
     else if (species > 7.5 && species < 8.5) { rad_x *= 0.55; rad_y *= 1.55; } // poplar column
     else if (species > 9.5 && species < 10.5) { rad_x *= 1.45; rad_y *= 0.42; } // palm frond disc
     else if ((species > 0.5 && species < 1.5) || (species > 5.5 && species < 6.5) || (species > 8.5 && species < 9.5)) {
-      // Pine / fir / cedar canopy discs — flatter layers for conical stack
-      rad_x *= 1.15;
-      rad_y *= 0.55;
+      // Pine / fir / cedar — thicker discs so stacked layers overlap (no floating pancakes)
+      rad_x *= 1.12;
+      rad_y *= 0.95;
     }
     let depth = (cross_i - 1.5) * 0.14 * scale;
     var lx = input.corner.x * rad_x + sway * 0.3;
@@ -1682,15 +2053,15 @@ struct TreeOut {
       col *= 0.72 + 0.28 * (1.0 - under * 0.55);
     } else if ((species > 0.5 && species < 1.5) || (species > 5.5 && species < 6.5) || (species > 8.5 && species < 9.5)) {
       // Pine / fir / cedar — soft conical disc layers (not finger shards)
-      let r = length(vec2f(u * 1.05, v * 1.55));
+      let r = length(vec2f(u * 1.02, v * 1.12));
       let scallop = 0.06 * sin(ang * 5.0 + phase * 3.0) + 0.03 * sin(ang * 9.0 - leafFine * 2.0);
-      let edge_r = 0.78 + scallop + leafClump * 0.05;
-      mask = 1.0 - smoothstep(edge_r - 0.16, edge_r + 0.2, r);
+      let edge_r = 0.82 + scallop + leafClump * 0.05;
+      mask = 1.0 - smoothstep(edge_r - 0.18, edge_r + 0.18, r);
       let dens = leafClump * 0.35 + leafMicro * 0.4 + leafFine * 0.25;
       let rim = smoothstep(edge_r - 0.35, edge_r + 0.05, r);
-      mask *= mix(1.0, smoothstep(0.18, 0.62, dens), rim * 0.7);
+      mask *= mix(1.0, smoothstep(0.18, 0.62, dens), rim * 0.55);
       // Soft needle flecks near rim only
-      mask *= 1.0 - smoothstep(0.82, 0.98, leafFine) * rim * 0.35;
+      mask *= 1.0 - smoothstep(0.85, 0.99, leafFine) * rim * 0.22;
       if (species > 5.5 && species < 6.5) {
         col = mix(vec3f(0.08, 0.2, 0.12), vec3f(0.16, 0.34, 0.2), leafN);
         let snow = smoothstep(0.15, 0.85, -v) * (0.35 + 0.45 * n1) * rim;
@@ -1810,19 +2181,25 @@ struct TreeOut {
 
   var nrm : vec3f;
   if (part < 0.5) {
-    nrm = normalize(vec3f(u * 2.8, 0.1 + v * 0.2, 0.9 + (1.0 - abs(u)) * 0.3));
+    // Cylindrical trunk normal in card space
+    let ang = u * 1.35;
+    nrm = normalize(vec3f(sin(ang) * 1.15, 0.08 + v * 0.18, cos(ang) * 0.95 + (1.0 - abs(u)) * 0.25));
   } else if (part < 1.5) {
-    nrm = normalize(vec3f(u * 2.2, 0.25 - v * 0.12, 0.82));
+    nrm = normalize(vec3f(u * 2.4, 0.3 - v * 0.15, 0.78 + (1.0 - abs(u)) * 0.2));
   } else if (part < 2.5) {
     let rr = length(vec2f(u, v));
     let nz = sqrt(max(0.04, 1.0 - rr * rr * 0.88));
-    // Stronger dome normal for volume (less flat card)
-    nrm = normalize(vec3f(u * 2.1, 0.55 - v * 0.85, nz * 1.15));
+    // Dome + micro leaf bump from UV noise
+    let bump = fract(sin(dot(vec2f(u, v), vec2f(19.1, 47.3)) + phase * 5.0) * 43758.55);
+    nrm = normalize(vec3f(u * 2.35, 0.62 - v * 0.95, nz * 1.25)
+      + vec3f(bump - 0.5, (fract(bump * 3.7) - 0.5) * 0.6, fract(bump * 7.1) - 0.5) * 0.28);
   } else {
-    nrm = normalize(vec3f(u * 1.6, 0.6 - v * 0.4, 0.8));
+    nrm = normalize(vec3f(u * 1.85, 0.7 - v * 0.5, 0.85));
   }
   let to_eye = normalize(frame.eye - input.world);
-  nrm = normalize(mix(nrm, to_eye, 0.08));
+  // Two-sided cards: flip when viewing the back
+  if (dot(nrm, to_eye) < 0.0) { nrm = -nrm; }
+  nrm = normalize(mix(nrm, to_eye, 0.06));
   let L = normalize(-frame.sun_dir);
   let wrap = max(dot(nrm, L) * 0.5 + 0.5, 0.0);
   let hemi = 0.16 + 0.36 * max(nrm.y, 0.0);
@@ -1834,9 +2211,9 @@ struct TreeOut {
     mix(0.42, 1.0, clamp(nrm.y * 0.65 + 0.35, 0.0, 1.0)),
     is_leaf > 0.4
   );
-  let sun = mix(frame.light_col, vec3f(0.9, 0.95, 1.0) * length(frame.light_col), 0.25) * 0.78;
-  var lit = col * (frame.amb * 0.7 + wrap * 0.5 * sh) * sun * self_ao;
-  lit += col * hemi * 0.28 * self_ao;
+  let sun = mix(frame.light_col, vec3f(0.9, 0.95, 1.0) * length(frame.light_col), 0.25) * 0.82;
+  var lit = col * (frame.amb * 0.55 + wrap * 0.62 * sh) * sun * self_ao;
+  lit += col * hemi * 0.24 * self_ao;
   // Bark: desaturate IBL so green grass bounce doesn't turn trunks neon
   let env_c = env_irradiance(nrm);
   if (is_leaf < 0.5) {
@@ -1851,12 +2228,17 @@ struct TreeOut {
     lit += sun * pow(ndh, 36.0) * 0.06 * sh * (1.0 - abs(u));
   }
   if (is_leaf > 0.5) {
-    // Subtle SSS — match dark grass mood, no neon glow
-    let sss = pow(1.0 - max(dot(nrm, to_eye), 0.0), 1.5) * wrap;
-    lit += col * vec3f(0.35, 0.55, 0.18) * sss * 0.35 * sh;
-    let back = pow(max(dot(-nrm, L), 0.0), 1.3);
-    lit += col * sun * vec3f(0.4, 0.65, 0.22) * back * 0.22;
-    lit += col * vec3f(0.3, 0.4, 0.5) * max(nrm.y, 0.0) * 0.1;
+    // Richer leaf SSS — thickness from rim + wrap lighting
+    let nde = max(dot(nrm, to_eye), 0.0);
+    let thick = pow(1.0 - nde, 1.35);
+    let wrap_l = max(dot(nrm, L) * 0.55 + 0.45, 0.0);
+    lit += col * vec3f(0.32, 0.58, 0.16) * thick * wrap_l * 0.55 * sh;
+    let back = pow(max(dot(-nrm, L), 0.0), 1.15);
+    lit += col * sun * vec3f(0.42, 0.72, 0.2) * back * 0.38;
+    lit += col * vec3f(0.28, 0.4, 0.52) * max(nrm.y, 0.0) * 0.14;
+    // Specular sheen on leaf faces
+    let h = normalize(L + to_eye);
+    lit += sun * pow(max(dot(nrm, h), 0.0), 48.0) * 0.08 * sh * (1.0 - thick * 0.5);
   }
   // Soft peak clamp — stop bright blob crowns
   let peak = max(lit.x, max(lit.y, lit.z));
@@ -2006,26 +2388,31 @@ struct BiomeW {
   desert : f32,
 };
 fn biome_weights(xz : vec2f) -> BiomeW {
+  // Wide noisy ecotones — climate + domain warp, never binary knife-edges
   let s = xz * (1.0 / 90.0);
-  let warp = biome_fbm(s * 0.7) * 0.35;
-  let warp2 = biome_fbm(s * 0.7 + vec2f(4.0, -2.0)) * 0.35;
-  let sw = s + vec2f(warp, warp2);
+  let warp = biome_fbm(s * 0.7) * 0.48;
+  let warp2 = biome_fbm(s * 0.7 + vec2f(4.0, -2.0)) * 0.48;
+  let warp3 = biome_fbm(xz * (1.0 / 52.0) + vec2f(2.3, -7.1)) * 0.14;
+  let sw = s + vec2f(warp, warp2) + vec2f(warp3, -warp3 * 0.7);
   let temp = biome_fbm(sw) * 0.88 + 0.08;
   let moist = biome_fbm(sw + vec2f(17.0, -9.0));
-  let jag = biome_fbm(xz * (1.0 / 42.0)) * 22.0
-    + biome_fbm(xz * (1.0 / 18.0) + vec2f(5.1, -3.7)) * 9.0;
-  let snow_blob = biome_fbm(xz * (1.0 / 110.0));
-  let snow_k = select(0.0, 1.0, (snow_blob > 0.28 && temp < 0.18) || temp < -0.28);
-  // Soft edge on snow patches
-  var snow = snow_k * smoothstep(0.18, 0.38, snow_blob + (0.28 - temp) * 0.35);
-  snow = clamp(snow + select(0.0, 0.85, temp < -0.28), 0.0, 1.0);
-  snow = smoothstep(0.12, 0.88, snow);
+  // Jitter in climate units (~10–40 m feathered borders)
+  let jag = biome_fbm(xz * (1.0 / 36.0)) * 0.20
+    + biome_fbm(xz * (1.0 / 15.0) + vec2f(5.1, -3.7)) * 0.11
+    + biome_fbm(xz * (1.0 / 7.0) + vec2f(-2.4, 8.2)) * 0.055;
+  let snow_blob = biome_fbm(xz * (1.0 / 110.0) + vec2f(jag * 0.5, -jag * 0.35));
+  let t2 = temp + jag * 0.6;
+  let m2 = moist + jag * 0.7;
+  // Continuous snow (no select hard cuts)
+  var snow = smoothstep(0.06, 0.44, snow_blob) * smoothstep(0.34, 0.0, t2);
+  snow = max(snow, smoothstep(-0.02, -0.40, t2));
+  snow = smoothstep(0.04, 0.82, clamp(snow, 0.0, 1.0));
   let rest = 1.0 - snow;
-  var desert = smoothstep(0.32, 0.58, temp) * (1.0 - smoothstep(-0.28, 0.02, moist)) * rest;
-  let wet = smoothstep(0.12, 0.48, moist + jag * 0.0022) * rest;
-  var marsh = wet * smoothstep(-0.08, 0.30, temp);
-  var forest = wet * (1.0 - smoothstep(-0.08, 0.30, temp));
-  var dry = (1.0 - smoothstep(-0.40, -0.05, moist)) * rest;
+  var desert = smoothstep(0.18, 0.64, t2) * (1.0 - smoothstep(-0.42, 0.14, m2)) * rest;
+  let wet = smoothstep(-0.05, 0.58, m2) * rest;
+  var marsh = wet * smoothstep(-0.22, 0.40, t2);
+  var forest = wet * (1.0 - smoothstep(-0.22, 0.40, t2));
+  var dry = (1.0 - smoothstep(-0.58, 0.10, m2)) * rest;
   dry = dry * (1.0 - clamp(desert + wet, 0.0, 1.0));
   var meadow = max(rest - desert - marsh - forest - dry, 0.0);
   var sum = meadow + dry + forest + snow + marsh + desert;
@@ -2119,11 +2506,11 @@ fn init_blades(@builtin(global_invocation_id) id : vec3u) {
   let clump = hash21(vec2f(f32(gix / 4) + f32(gen.seed) * 0.01, f32(giz / 4)));
   let kind = floor(blade_seed * 3.0);
   let bw = biome_weights(vec2f(wx, wz));
-  // FE-ish heights (0.4–0.8) with a touch more volume for avatar scale
+  // FE-ish heights — marsh reeds slightly shorter so trunks/feet stay readable
   var h_lo = 0.48 * bw.meadow + 0.32 * bw.dry + 0.70 * bw.forest
-    + 0.18 * bw.snow + 0.60 * bw.marsh + 0.12 * bw.desert;
+    + 0.18 * bw.snow + 0.48 * bw.marsh + 0.12 * bw.desert;
   var h_hi = 0.92 * bw.meadow + 0.62 * bw.dry + 1.15 * bw.forest
-    + 0.40 * bw.snow + 1.05 * bw.marsh + 0.32 * bw.desert;
+    + 0.40 * bw.snow + 0.82 * bw.marsh + 0.32 * bw.desert;
   var dens = 1.0 * bw.meadow + 0.9 * bw.dry + 1.0 * bw.forest
     + 0.65 * bw.snow + 0.95 * bw.marsh + 0.4 * bw.desert;
   if (dens < 0.99 && blade_seed > dens) {
@@ -2133,11 +2520,11 @@ fn init_blades(@builtin(global_invocation_id) id : vec3u) {
   var height = h_base * mix(0.88, 1.22, blade_seed) * mix(0.15, 1.0, slope_ok);
   // Full-island carpet — only beach/coast fades (no moving circular patch)
   let iedge = island_edge_w(vec2f(wx, wz));
-  // Keep beach clear of grass — wide sandy strip
-  if (iedge > 0.22 || wy < -0.2) {
+  // Keep beach clear of grass — wide sandy berm before waterline
+  if (iedge > 0.09 || wy < -0.12) {
     height = 0.01;
-  } else if (iedge > 0.04) {
-    height *= smoothstep(0.22, 0.04, iedge);
+  } else if (iedge > 0.015) {
+    height *= smoothstep(0.09, 0.015, iedge);
   }
   // No grass through boulders
   if (grass_on_rock(wx, wz)) {
@@ -2226,10 +2613,10 @@ fn cull_lod(@builtin(global_invocation_id) id : vec3u) {
 
   let noise = fract(f32(i) * 0.12345) * 2.0 - 1.0;
   let nd = dist + noise * dist * 0.04;
-  // Aggressive thin outside the HQ bubble
+  // Aggressive thin outside the HQ bubble (geometry density only — same blade shader)
   if (nd >= cull.lod1_max) {
     let keep = fract(f32(i) * 0.754877666 + f32(i / 97u) * 0.312);
-    let dens = select(0.28, 0.12, nd > cull.lod1_max * 1.35);
+    let dens = select(0.22, 0.09, nd > cull.lod1_max * 1.35);
     if (keep > dens) { return; }
   }
 
@@ -2481,7 +2868,7 @@ fn gerstner_swell(xz : vec2f, t : f32) -> vec3f {
   var xz0 = oc_clamp_shore(input.pos.xz);
   let edge0 = oc_island_edge(xz0);
   // Kill horizontal wave push near the beach so tide doesn't crawl inland
-  let shore_damp = smoothstep(0.42, 0.72, edge0);
+  let shore_damp = smoothstep(0.34, 0.68, edge0);
   let s0 = sample_disp(cascade0, xz0, op.patch0);
   let s1 = sample_disp(cascade1, xz0, op.patch1);
   let swell = gerstner_swell(xz0, t);
@@ -2513,9 +2900,9 @@ fn gerstner_swell(xz : vec2f, t : f32) -> vec3f {
 @fragment fn fs_ocean(input : OceanOut) -> @location(0) vec4f {
   let t = frame.time;
   let edge = input.shore_e;
-  // Dry beach / inland — no ocean surface
-  if (edge < 0.40) { discard; }
-  let shore_fade = smoothstep(0.40, 0.52, edge);
+  // Soft start over wet sand — no knife-edge discard at the berm
+  if (edge < 0.30) { discard; }
+  let shore_fade = smoothstep(0.30, 0.56, edge);
   let V = normalize(frame.eye - input.world);
   let L = normalize(-frame.sun_dir);
   var n = normalize(input.nrm);
@@ -2527,17 +2914,18 @@ fn gerstner_swell(xz : vec2f, t : f32) -> vec3f {
   let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
   let radial = length(input.world.xz);
   let rim = oc_coast_radius(input.world.xz);
-  let shallow = smoothstep(0.42, 0.75, edge);
+  let shallow = smoothstep(0.34, 0.78, edge);
   let deep = smoothstep(0.65, 1.0, edge) * smoothstep(rim * 1.05, rim * 2.5, radial);
-  var col = mix(vec3f(0.14, 0.58, 0.55), vec3f(0.035, 0.20, 0.36), shallow);
+  // Clear sandy shallows → deep blue (mute neon teal that read as lime land)
+  var col = mix(vec3f(0.20, 0.38, 0.36), vec3f(0.035, 0.18, 0.34), shallow);
   col = mix(col, vec3f(0.008, 0.04, 0.12), deep);
   let crest = smoothstep(0.4, 1.1, input.foam_v);
   let steep = 1.0 - clamp(n.y, 0.0, 1.0);
   let foam_wave = crest * (0.5 + 0.5 * steep);
-  let shore = smoothstep(0.58, 0.42, edge) * smoothstep(0.40, 0.50, edge);
-  let shore_pulse = 0.55 + 0.45 * sin(edge * 30.0 - t * 2.4 + radial * 0.07);
-  let foam = clamp(foam_wave * 0.9 + shore * shore_pulse * 0.95, 0.0, 1.0);
-  col = mix(col, vec3f(0.9, 0.95, 0.99), foam * 0.82);
+  let shore = smoothstep(0.64, 0.34, edge) * smoothstep(0.30, 0.48, edge);
+  let shore_pulse = 0.55 + 0.45 * sin(edge * 12.0 - t * 1.9 + radial * 0.05);
+  let foam = clamp(foam_wave * 0.85 + shore * shore_pulse * 1.05, 0.0, 1.0);
+  col = mix(col, vec3f(0.92, 0.96, 0.99), foam * 0.88);
   let day = smoothstep(0.18, 0.42, frame.tod) * (1.0 - smoothstep(0.58, 0.82, frame.tod));
   let dusk = max(
     smoothstep(0.12, 0.28, frame.tod) * (1.0 - smoothstep(0.28, 0.42, frame.tod)),
@@ -2550,7 +2938,7 @@ fn gerstner_swell(xz : vec2f, t : f32) -> vec3f {
   let h = normalize(L + V);
   let ndh = max(dot(n, h), 0.0);
   let sun_spec = pow(ndh, 240.0) * 2.0 + pow(ndh, 70.0) * 0.5;
-  let sss = vec3f(0.04, 0.48, 0.44) * pow(1.0 - ndv, 2.4) * pow(max(1.0 - n.y, 0.0), 1.4)
+  let sss = vec3f(0.05, 0.26, 0.28) * pow(1.0 - ndv, 2.4) * pow(max(1.0 - n.y, 0.0), 1.4)
     * (0.5 + shallow * 0.7) * (0.35 + crest * 0.9);
   let sh = 0.65 + 0.35 * max(ndl, 0.0);
   var rgb = col * (frame.amb * 0.7 + ndl * 0.5 * sh) * frame.light_col + sky_refl * fres + frame.light_col * sun_spec * fres * sh + sss;
@@ -2560,7 +2948,8 @@ fn gerstner_swell(xz : vec2f, t : f32) -> vec3f {
     rgb += vec3f(0.05, 0.18, 0.24) * fres * under * 0.6;
   }
   rgb = apply_fog(rgb, input.world);
-  let alpha = mix(0.55, 0.98, clamp(shallow * 0.45 + deep * 0.4 + foam * 0.25 + fres * 0.2, 0.0, 1.0))
+  // More transparent at the wet sand so berm reads through
+  let alpha = mix(0.22, 0.96, clamp(shallow * 0.5 + deep * 0.4 + foam * 0.28 + fres * 0.18, 0.0, 1.0))
     * shore_fade;
   return vec4f(clamp(rgb, vec3f(0.0), vec3f(6.0)), alpha);
 }
@@ -2642,15 +3031,18 @@ fn fl_island_edge(xz : vec2f) -> f32 {
   let t = frame.time;
   let xz = input.world.xz;
   // Hide seafloor under the island / dry beach
-  if (fl_island_edge(xz) < 0.42) { discard; }
+  let fe = fl_island_edge(xz);
+  if (fe < 0.36) { discard; }
   let n1 = fract(sin(dot(floor(xz * 0.15), vec2f(12.9, 78.2))) * 43758.5);
   let n2 = fract(sin(dot(xz * 0.4, vec2f(41.2, 19.7))) * 24634.1);
-  var col = mix(vec3f(0.22, 0.18, 0.12), vec3f(0.12, 0.16, 0.14), n1);
-  col = mix(col, vec3f(0.18, 0.14, 0.10), n2 * 0.35);
+  var col = mix(vec3f(0.30, 0.26, 0.18), vec3f(0.14, 0.16, 0.14), n1);
+  col = mix(col, vec3f(0.20, 0.16, 0.12), n2 * 0.35);
+  // Near-shore sand bed under clear water
+  col = mix(vec3f(0.42, 0.36, 0.26), col, smoothstep(0.42, 0.72, fe));
   let c1 = sin(xz.x * 0.55 + t * 1.6) * cos(xz.y * 0.48 - t * 1.3);
   let c2 = sin(xz.x * 1.1 - xz.y * 0.9 + t * 2.2) * cos(xz.y * 1.05 + t * 1.8);
   let cau = pow(max(c1 * 0.55 + c2 * 0.45, 0.0), 2.2);
-  col += vec3f(0.15, 0.35, 0.32) * cau * 0.85;
+  col += vec3f(0.10, 0.22, 0.24) * cau * 0.55 * smoothstep(0.45, 0.8, fe);
   let L = normalize(-frame.sun_dir);
   let ndl = max(dot(vec3f(0.0, 1.0, 0.0), L), 0.15);
   col *= frame.light_col * (frame.amb + ndl * 0.6);
@@ -2737,68 +3129,80 @@ fn sun_tint(sun_h : f32) -> vec3f {
   let dusk = exp(-pow(sun_h / 0.22, 2.0)) * smoothstep(-0.35, 0.05, sun_h);
   let night = 1.0 - clamp(day + dusk * 0.85, 0.0, 1.0);
 
-  let hz = exp(-max(elev, 0.0) * 4.5);
-  var zenith = vec3f(0.22, 0.45, 0.85) * day
-    + vec3f(0.18, 0.16, 0.35) * dusk
-    + vec3f(0.015, 0.025, 0.06) * night;
-  var horizon = vec3f(0.62, 0.75, 0.92) * day
-    + vec3f(0.95, 0.48, 0.22) * dusk
-    + vec3f(0.05, 0.07, 0.14) * night;
+  // Rayleigh-ish height falloff + warm horizon haze
+  let elev_cl = clamp(elev, -0.15, 1.0);
+  let hz = exp(-max(elev_cl, 0.0) * 3.2);
+  let haze = exp(-max(elev_cl, 0.0) * 1.15) * (1.0 - exp(-max(elev_cl + 0.05, 0.0) * 8.0));
+  var zenith = vec3f(0.16, 0.38, 0.82) * day
+    + vec3f(0.14, 0.12, 0.32) * dusk
+    + vec3f(0.012, 0.018, 0.05) * night;
+  // Slight ozone / cool tint near top
+  zenith = mix(zenith, vec3f(0.12, 0.28, 0.78), day * 0.22);
+  var horizon = vec3f(0.72, 0.82, 0.94) * day
+    + vec3f(0.98, 0.52, 0.28) * dusk
+    + vec3f(0.06, 0.08, 0.16) * night;
   let sun_az = max(dot(normalize(vec3f(dir.x, 0.0, dir.z) + vec3f(1e-4)), normalize(vec3f(sun.x, 0.0, sun.z) + vec3f(1e-4))), 0.0);
-  horizon = mix(horizon, vec3f(1.0, 0.55, 0.25), dusk * pow(sun_az, 3.0) * 0.65);
+  horizon = mix(horizon, vec3f(1.0, 0.62, 0.32), dusk * pow(sun_az, 2.4) * 0.78);
+  horizon = mix(horizon, vec3f(0.95, 0.88, 0.72), day * pow(sun_az, 4.0) * 0.22);
   var col = mix(zenith, horizon, hz);
-  col = mix(col * 0.35, col, smoothstep(-0.08, 0.02, elev));
+  // Ground bounce / aerial haze band
+  col = mix(col, mix(horizon, vec3f(0.78, 0.86, 0.95), 0.35), haze * 0.35 * day);
+  col = mix(col * 0.28, col, smoothstep(-0.10, 0.04, elev));
 
-  // Soft billowy clouds — warped FBM, wide falloff, no hard rectangles
+  // Soft billowy clouds
   let elev_safe = max(elev, 0.02);
-  let cloud_uv = dir.xz / elev_safe * 0.42
-    + vec2f(sky.time * 0.006, sky.time * 0.0025);
-  // Slight rotation so projection isn't axis-locked
+  let cloud_uv = dir.xz / elev_safe * 0.38
+    + vec2f(sky.time * 0.0055, sky.time * 0.0022);
   let cu = cloud_uv.x * 0.96 - cloud_uv.y * 0.28;
   let cv = cloud_uv.x * 0.28 + cloud_uv.y * 0.96;
-  let cl = fbm2_warp(vec2f(cu, cv) * 1.35);
-  let cl_detail = fbm2(vec2f(cu, cv) * 4.8 + vec2f(3.1, -2.4));
-  let density = cl * 0.78 + cl_detail * 0.22;
-  let cover = mix(0.62, 0.38, clamp(sky.cloud, 0.0, 1.0));
-  let cloud_mask = smoothstep(cover - 0.22, cover + 0.28, density)
-    * smoothstep(0.01, 0.22, elev)
-    * (1.0 - smoothstep(0.55, 0.95, elev) * 0.35)
+  let cl = fbm2_warp(vec2f(cu, cv) * 1.25);
+  let cl_detail = fbm2(vec2f(cu, cv) * 4.6 + vec2f(3.1, -2.4));
+  let density = cl * 0.74 + cl_detail * 0.26;
+  let cover = mix(0.60, 0.36, clamp(sky.cloud, 0.0, 1.0));
+  let cloud_mask = smoothstep(cover - 0.26, cover + 0.32, density)
+    * smoothstep(0.02, 0.28, elev)
+    * (1.0 - smoothstep(0.52, 0.92, elev) * 0.4)
     * clamp(sky.cloud, 0.0, 1.0);
-  var cloud_col = mix(vec3f(0.92, 0.94, 0.98), vec3f(1.0, 0.78, 0.55), dusk * 0.85);
-  cloud_col = mix(cloud_col, vec3f(0.14, 0.16, 0.24), night);
-  // Soft self-shadow in denser lobes
-  cloud_col *= 0.82 + 0.18 * smoothstep(cover, cover + 0.35, density);
-  let cl_lit = pow(max(dot(dir, sun), 0.0), 3.5);
-  cloud_col += sun_tint(sun_h) * cl_lit * 0.35 * (0.5 + 0.5 * density);
-  col = mix(col, cloud_col, clamp(cloud_mask * (0.45 + 0.4 * day + 0.25 * dusk), 0.0, 0.92));
+  var cloud_col = mix(vec3f(0.94, 0.96, 1.0), vec3f(1.0, 0.80, 0.58), dusk * 0.9);
+  cloud_col = mix(cloud_col, vec3f(0.12, 0.14, 0.22), night);
+  // Lit tops / cooler shadowed undersides
+  let cl_lit = pow(max(dot(dir, sun), 0.0), 2.8);
+  cloud_col *= mix(0.72, 1.08, smoothstep(cover - 0.1, cover + 0.4, density));
+  cloud_col += sun_tint(sun_h) * cl_lit * 0.42 * (0.4 + 0.6 * density);
+  cloud_col = mix(cloud_col, cloud_col * vec3f(0.78, 0.82, 0.9), (1.0 - cl_lit) * 0.28);
+  col = mix(col, cloud_col, clamp(cloud_mask * (0.42 + 0.42 * day + 0.28 * dusk), 0.0, 0.9));
 
   let sun_ang = acos(clamp(dot(dir, sun), -1.0, 1.0));
   let sun_vis = smoothstep(-0.12, 0.02, sun_h);
-  let sun_core = smoothstep(0.025, 0.008, sun_ang) * sun_vis;
-  let sun_glow = exp(-sun_ang * 28.0) * sun_vis;
-  let sun_halo = exp(-sun_ang * 8.0) * sun_vis;
+  let sun_core = smoothstep(0.022, 0.006, sun_ang) * sun_vis;
+  let sun_glow = exp(-sun_ang * 24.0) * sun_vis;
+  let sun_halo = exp(-sun_ang * 6.5) * sun_vis;
+  let mie = exp(-sun_ang * 3.2) * sun_vis; // wide Mie bloom
   let scol = sun_tint(sun_h);
-  col += scol * (sun_core * 8.0 + sun_glow * 1.8 + sun_halo * 0.45);
+  col += scol * (sun_core * 9.5 + sun_glow * 2.1 + sun_halo * 0.55 + mie * 0.28);
+  // Warm god-ray-ish wash toward sun on horizon
+  col += scol * vec3f(1.0, 0.85, 0.65) * pow(sun_az, 5.0) * hz * sun_vis * 0.18 * (day + dusk);
 
   let moon_ang = acos(clamp(dot(dir, moon), -1.0, 1.0));
   let moon_vis = smoothstep(-0.05, 0.08, moon.y) * (0.25 + night * 1.0);
   let moon_core = smoothstep(0.028, 0.012, moon_ang) * moon_vis;
-  let moon_glow = exp(-moon_ang * 22.0) * moon_vis * 0.55;
-  col += vec3f(0.82, 0.88, 1.0) * (moon_core * 1.8 + moon_glow);
+  let moon_glow = exp(-moon_ang * 20.0) * moon_vis * 0.6;
+  col += vec3f(0.82, 0.88, 1.0) * (moon_core * 2.0 + moon_glow);
 
-  if (night > 0.25 && elev > 0.05) {
-    let sp = dir * 160.0;
+  if (night > 0.2 && elev > 0.04) {
+    let sp = dir * 175.0;
     let cell = floor(sp);
     let h = hash21(cell.xy + vec2f(cell.z * 13.0, cell.z * 7.0));
-    if (h > 0.993) {
+    if (h > 0.991) {
       let f = fract(sp);
       let d2 = length(f.xy - vec2f(0.5));
-      let tw = 0.6 + 0.4 * sin(sky.time * (2.0 + h * 5.0) + h * 20.0);
-      col += vec3f(0.85, 0.9, 1.0) * smoothstep(0.07, 0.0, d2) * night * tw;
+      let tw = 0.55 + 0.45 * sin(sky.time * (2.0 + h * 5.0) + h * 20.0);
+      let bright = smoothstep(0.994, 1.0, h);
+      col += vec3f(0.85, 0.9, 1.0) * smoothstep(0.08, 0.0, d2) * night * tw * (0.7 + bright * 1.4);
     }
   }
 
-  return vec4f(clamp(col, vec3f(0.0), vec3f(14.0)), 1.0);
+  return vec4f(clamp(col, vec3f(0.0), vec3f(16.0)), 1.0);
 }
 `;
 
@@ -2825,6 +3229,10 @@ struct PostParams {
   near : f32,
   far : f32,
   underwater : f32,
+  taa_blend : f32,
+  _pad0 : f32,
+  _pad1 : f32,
+  _pad2 : f32,
 };
 @group(0) @binding(0) var post_samp : sampler;
 @group(0) @binding(1) var post_tex : texture_2d<f32>;
@@ -2905,6 +3313,7 @@ fn aces(x : vec3f) -> vec3f {
 }
 
 fn fxaa(uv : vec2f) -> vec3f {
+  // HQ edge AA — all samples in uniform control flow (WebGPU requirement)
   let dims = vec2f(textureDimensions(post_tex));
   let texel = 1.0 / dims;
   let rgbM = textureSample(post_tex, post_samp, uv).rgb;
@@ -2914,12 +3323,20 @@ fn fxaa(uv : vec2f) -> vec3f {
   let lS = dot(textureSample(post_tex, post_samp, uv + vec2f(0.0, texel.y)).rgb, luma);
   let lE = dot(textureSample(post_tex, post_samp, uv + vec2f(texel.x, 0.0)).rgb, luma);
   let lW = dot(textureSample(post_tex, post_samp, uv + vec2f(-texel.x, 0.0)).rgb, luma);
+  let lNE = dot(textureSample(post_tex, post_samp, uv + vec2f(texel.x, -texel.y)).rgb, luma);
+  let lNW = dot(textureSample(post_tex, post_samp, uv + vec2f(-texel.x, -texel.y)).rgb, luma);
+  let lSE = dot(textureSample(post_tex, post_samp, uv + vec2f(texel.x, texel.y)).rgb, luma);
+  let lSW = dot(textureSample(post_tex, post_samp, uv + vec2f(-texel.x, texel.y)).rgb, luma);
   let lMin = min(lM, min(min(lN, lS), min(lE, lW)));
   let lMax = max(lM, max(max(lN, lS), max(lE, lW)));
-  let dir = vec2f(-((lN + lS) - (lE + lW)), ((lE + lW) - (lN + lS)));
+  let range = lMax - lMin;
+  let dir = vec2f(
+    -((lN + lS) - (lE + lW) + ((lNE + lNW) - (lSE + lSW)) * 0.25),
+    ((lE + lW) - (lN + lS) + ((lNE + lSE) - (lNW + lSW)) * 0.25)
+  );
   let dir_reduce = max((lN + lS + lE + lW) * 0.03125, 1.0 / 128.0);
   let rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + dir_reduce);
-  var d = clamp(dir * rcp, vec2f(-8.0), vec2f(8.0)) * texel;
+  let d = clamp(dir * rcp, vec2f(-12.0), vec2f(12.0)) * texel;
   let rgbA = 0.5 * (
     textureSample(post_tex, post_samp, uv + d * (1.0 / 3.0 - 0.5)).rgb +
     textureSample(post_tex, post_samp, uv + d * (2.0 / 3.0 - 0.5)).rgb
@@ -2928,9 +3345,17 @@ fn fxaa(uv : vec2f) -> vec3f {
     textureSample(post_tex, post_samp, uv + d * -0.5).rgb +
     textureSample(post_tex, post_samp, uv + d * 0.5).rgb
   );
+  let rgbC = rgbB * 0.5 + 0.25 * (
+    textureSample(post_tex, post_samp, uv + d * -1.0).rgb +
+    textureSample(post_tex, post_samp, uv + d * 1.0).rgb
+  );
   let lB = dot(rgbB, luma);
-  if (lB < lMin || lB > lMax) { return rgbA; }
-  return rgbB;
+  let lC = dot(rgbC, luma);
+  let use_c = (lC >= lMin) && (lC <= lMax);
+  let use_b = (lB >= lMin) && (lB <= lMax);
+  let filtered = select(select(rgbA, rgbB, use_b), rgbC, use_c);
+  let flat = range < max(0.0312, lMax * 0.125);
+  return select(filtered, rgbM, flat);
 }
 
 @fragment fn fs_composite(input : PostOut) -> @location(0) vec4f {
@@ -2943,15 +3368,15 @@ fn fxaa(uv : vec2f) -> vec3f {
 
   let soft_s = textureSample(post_soft, post_samp, uv);
   let bloom = textureSample(post_tex_b, post_samp, uv).rgb;
-  // Cap CoC — FE DoF is subtle autofocus, not a milk haze
-  let coc = 0.0; // no blur
+  // FE-style subtle autofocus — CoC lives in soft alpha from fs_dof_blur
+  let coc = clamp(soft_s.a, 0.0, 0.48);
 
   var sharp = textureSample(post_tex, post_samp, uv).rgb;
   // Light FXAA only on edges (avoid grain wash on meadow)
   let aa = fxaa(uv);
   let luma = vec3f(0.299, 0.587, 0.114);
   let edge = smoothstep(0.04, 0.14, abs(dot(sharp, luma) - dot(aa, luma)));
-  sharp = mix(sharp, aa, edge * 0.65);
+  sharp = mix(sharp, aa, edge * 0.92);
 
   if (post.helmet > 0.01) {
     let ca = to_c0 * 0.008 * post.helmet;
@@ -2961,7 +3386,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     sharp = vec3f(r, g, b);
   }
 
-  var rgb = mix(sharp, soft_s.rgb, coc) + bloom * 0.08;
+  var rgb = mix(sharp, soft_s.rgb, coc) + bloom * 0.12;
   // Cheap depth-contact darkening (fake AO under canopies / near edges)
   {
     let dims = vec2f(textureDimensions(post_depth));
@@ -3009,6 +3434,36 @@ fn fxaa(uv : vec2f) -> vec3f {
   return vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 
+@fragment fn fs_taa(input : PostOut) -> @location(0) vec4f {
+  let uv = input.uv;
+  // All textureSample calls in uniform control flow (no early-return).
+  let cur = textureSample(post_tex, post_samp, uv).rgb;
+  let hist = textureSample(post_tex_b, post_samp, uv).rgb;
+  let dims = vec2f(textureDimensions(post_tex));
+  let texel = 1.0 / dims;
+  let s0 = textureSample(post_tex, post_samp, uv + vec2f(texel.x, 0.0)).rgb;
+  let s1 = textureSample(post_tex, post_samp, uv + vec2f(-texel.x, 0.0)).rgb;
+  let s2 = textureSample(post_tex, post_samp, uv + vec2f(0.0, texel.y)).rgb;
+  let s3 = textureSample(post_tex, post_samp, uv + vec2f(0.0, -texel.y)).rgb;
+  let s4 = textureSample(post_tex, post_samp, uv + vec2f(texel.x, texel.y)).rgb;
+  let s5 = textureSample(post_tex, post_samp, uv + vec2f(-texel.x, texel.y)).rgb;
+  let s6 = textureSample(post_tex, post_samp, uv + vec2f(texel.x, -texel.y)).rgb;
+  let s7 = textureSample(post_tex, post_samp, uv + vec2f(-texel.x, -texel.y)).rgb;
+  var nmin = min(cur, min(min(s0, s1), min(s2, s3)));
+  nmin = min(nmin, min(min(s4, s5), min(s6, s7)));
+  var nmax = max(cur, max(max(s0, s1), max(s2, s3)));
+  nmax = max(nmax, max(max(s4, s5), max(s6, s7)));
+  let h = clamp(hist, nmin, nmax);
+  let luma = vec3f(0.299, 0.587, 0.114);
+  let dl = abs(dot(cur, luma) - dot(h, luma));
+  let w = select(
+    0.0,
+    clamp(post.taa_blend * (1.0 - smoothstep(0.02, 0.18, dl)), 0.0, 0.92),
+    post.taa_blend >= 0.01
+  );
+  return vec4f(mix(cur, h, w), 1.0);
+}
+
 // Avatar atlas: top half = color RGBA, bottom half = linDepth/far in R
 @group(0) @binding(6) var avatar_atlas : texture_2d<f32>;
 
@@ -3022,14 +3477,21 @@ fn fxaa(uv : vec2f) -> vec3f {
   let dims = vec2f(textureDimensions(post_depth));
   let raw_d = textureLoad(post_depth, vec2i(clamp(uv, vec2f(0.0), vec2f(0.999)) * dims), 0);
   let meadow_z = linearize_depth(raw_d);
-  // Local avatar: normal depth test vs meadow.
-  // Remotes may paint with depthWrite=false (clear depth ~1.0) so also accept
-  // high av_dn — otherwise peers are invisible while HTML nameplates still show.
-  let eps = 1.35;
+  // Strict depth: grass/props in front of the avatar must win (was eps=1.35m —
+  // that painted feet over blades). Tiny bias only for z-fight vs terrain.
+  let eps = max(0.025, av_z * 0.0015);
   let depth_ok = av_z < meadow_z + eps;
+  // Soft edge when depths are nearly equal — still prefers closer meadow
+  let soft = smoothstep(meadow_z + eps * 2.5, meadow_z - eps, av_z);
+  // Remotes may paint with depthWrite=false (clear depth ~1.0)
   let remote_paint = av_dn > 0.995;
-  let cover = select(0.0, 1.0, av.a >= 0.02 && (depth_ok || remote_paint));
-  let rgb = mix(meadow.rgb, av.rgb, clamp(av.a, 0.0, 1.0) * cover);
+  let cover = select(
+    clamp(av.a, 0.0, 1.0) * soft,
+    clamp(av.a, 0.0, 1.0),
+    remote_paint
+  );
+  let show = select(0.0, cover, av.a >= 0.02 && (depth_ok || remote_paint));
+  let rgb = mix(meadow.rgb, av.rgb, show);
   return vec4f(rgb, 1.0);
 }
 `;
@@ -3309,13 +3771,14 @@ fn fxaa(uv : vec2f) -> vec3f {
     const sceneFormat = wantF16 ? "rgba16float" : "rgba8unorm";
     const bloomScale = 0.35;
     const NEAR = 0.1, FAR = 800;
-    // Quality bubble around avatar — full detail inside, cheap outside
-    const HQ_RADIUS = 80;
-    const GRASS_LOD0 = 36;       // 15-seg blades
+    // Quality bubble — full blade tessellation near player; cheaper geometry far away
+    // (texture/sample quality unchanged — only segment count & draw density)
+    const HQ_RADIUS = 62;
+    const GRASS_LOD0 = 28;       // 15-seg blades (tight near field)
     const GRASS_LOD1 = HQ_RADIUS; // 5-seg within bubble
-    const GRASS_FAR = 220;       // hard cull grass beyond
+    const GRASS_FAR = 175;       // hard cull grass beyond
     const TREE_DRAW = 180;       // draw trees within
-    const TREE_SHADOW = 85;      // cast tree shadows within
+    const TREE_SHADOW = 65;      // cast tree shadows within
     const PROP_FAR = 100;        // rocks / flowers fade
     const ISLAND_HALF = 256;
     const BIOME_NAMES = ["Pradera", "Llanura", "Bosque", "Nieve", "Pantano", "Desierto"];
@@ -3506,12 +3969,17 @@ fn fxaa(uv : vec2f) -> vec3f {
           } else {
             const bid = biomeAtJs(wx, wz);
             let c0 = BIOME_RGB[bid][0], c1 = BIOME_RGB[bid][1], c2 = BIOME_RGB[bid][2];
-            // Wide sandy shoreline on the map
-            const beach = edge > 0.02 ? Math.min(1, (edge - 0.02) / 0.40) : 0;
-            const sand0 = 210, sand1 = 186, sand2 = 128;
+            // Wide sandy shoreline on the map (matches fs_terrain beach bands)
+            const beach = edge > 0.0 ? Math.min(1, edge / 0.38) : 0;
+            const wet = edge > 0.28 ? Math.min(1, (edge - 0.28) / 0.22) : 0;
+            const sand0 = 214, sand1 = 188, sand2 = 128;
+            const wet0 = 110, wet1 = 96, wet2 = 72;
             c0 = c0 * (1 - beach) + sand0 * beach;
             c1 = c1 * (1 - beach) + sand1 * beach;
             c2 = c2 * (1 - beach) + sand2 * beach;
+            c0 = c0 * (1 - wet) + wet0 * wet;
+            c1 = c1 * (1 - wet) + wet1 * wet;
+            c2 = c2 * (1 - wet) + wet2 * wet;
             // Centre mountain relief: hillshade + elevation tint + contour rings
             const h = centerMtnHeight(wx, wz);
             if (h > 0.4) {
@@ -3646,7 +4114,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     function setMapOpen(on) {
       mapOpen = !!on;
       if (mapOpen) {
-        try { exitAimLock(); } catch (_) {}
+        try { syncCursorForUi(); } catch (_) {}
         if (!worldMapReady) paintWorldMapBase();
         redrawMapOverlay();
         if (typeof mapDlg.showModal === "function") mapDlg.showModal();
@@ -3654,6 +4122,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       } else {
         if (typeof mapDlg.close === "function") mapDlg.close();
         else mapDlg.removeAttribute("open");
+        try { syncCursorForUi(); } catch (_) {}
       }
     }
     function toggleMap() {
@@ -3664,7 +4133,10 @@ fn fxaa(uv : vec2f) -> vec3f {
       // light-dismiss fallback
       if (e.target === mapDlg) setMapOpen(false);
     });
-    mapDlg.addEventListener("close", () => { mapOpen = false; });
+    mapDlg.addEventListener("close", () => {
+      mapOpen = false;
+      try { syncCursorForUi(); } catch (_) {}
+    });
     // Lazy-build map after first frame so boot stays snappy
     requestAnimationFrame(() => {
       try { paintWorldMapBase(); } catch (e) { console.warn("[map]", e); }
@@ -3711,12 +4183,14 @@ fn fxaa(uv : vec2f) -> vec3f {
     let size = configure();
     function destroyTex(tex) { try { tex && tex.destroy(); } catch (_) {} }
 
-    let depth, sceneColor, bloomA, bloomB, dofTex, compTex, avatarAtlas;
-    let sceneView, bloomAView, bloomBView, dofView, depthView, compView, avatarAtlasView;
+    let depth, sceneColor, bloomA, bloomB, dofTex, compTex, taaTex, historyTex, avatarAtlas;
+    let sceneView, bloomAView, bloomBView, dofView, depthView, compView, taaView, historyView, avatarAtlasView;
     let getAvatarAtlas = null;
+    let taaReady = false;
     function rebuildTargets() {
       destroyTex(depth); destroyTex(sceneColor); destroyTex(bloomA); destroyTex(bloomB);
-      destroyTex(dofTex); destroyTex(compTex); destroyTex(avatarAtlas);
+      destroyTex(dofTex); destroyTex(compTex); destroyTex(taaTex); destroyTex(historyTex); destroyTex(avatarAtlas);
+      taaReady = false;
       depth = device.createTexture({
         size: [size.w, size.h],
         format: "depth32float",
@@ -3745,6 +4219,14 @@ fn fxaa(uv : vec2f) -> vec3f {
         size: [size.w, size.h], format: "rgba8unorm",
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
+      taaTex = device.createTexture({
+        size: [size.w, size.h], format: "rgba8unorm",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      historyTex = device.createTexture({
+        size: [size.w, size.h], format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
       // Double-height atlas from VRM (color | depth)
       avatarAtlas = device.createTexture({
         size: [size.w, size.h * 2], format: "rgba8unorm",
@@ -3756,6 +4238,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       dofView = dofTex.createView();
       depthView = depth.createView();
       compView = compTex.createView();
+      taaView = taaTex.createView();
+      historyView = historyTex.createView();
       avatarAtlasView = avatarAtlas.createView();
     }
     rebuildTargets();
@@ -3812,7 +4296,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     });
 
     const frameBuf = device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const postParamBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const postParamBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const genBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const cullBuf = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
@@ -4249,6 +4733,34 @@ fn fxaa(uv : vec2f) -> vec3f {
       depthStencil: { format: "depth32float", depthWriteEnabled: false, depthCompare: "less" },
     });
 
+    const birdPipe = device.createRenderPipeline({
+      layout: framePipeLayout,
+      vertex: {
+        module: sceneModule, entryPoint: "vs_bird",
+        buffers: [{
+          arrayStride: 48,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" },
+            { shaderLocation: 1, offset: 12, format: "float32x2" },
+            { shaderLocation: 2, offset: 20, format: "float32x4" },
+            { shaderLocation: 3, offset: 36, format: "float32x3" },
+          ],
+        }],
+      },
+      fragment: {
+        module: sceneModule, entryPoint: "fs_bird",
+        targets: [{
+          format: sceneFormat,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
+        }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: false, depthCompare: "less" },
+    });
+
     const rockPipe = device.createRenderPipeline({
       layout: framePipeLayout,
       vertex: {
@@ -4364,6 +4876,14 @@ fn fxaa(uv : vec2f) -> vec3f {
       },
       fragment: { module: sceneModule, entryPoint: "fs_shadow_tree", targets: [] },
       primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
+    });
+
+    const shadowGrassPipe = device.createRenderPipeline({
+      layout: grassPipeLayout,
+      vertex: { module: sceneModule, entryPoint: "vs_grass_shadow", buffers: [] },
+      fragment: { module: sceneModule, entryPoint: "fs_shadow_grass", targets: [] },
+      primitive: { topology: "triangle-strip", cullMode: "none" },
       depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
     });
 
@@ -4561,6 +5081,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     const dofPipe = makePostPipe("fs_dof_blur", sceneFormat);
     // Meadow tonemap → intermediate (then depth-merge avatar)
     const compPipe = makePostPipe("fs_composite", "rgba8unorm");
+    const taaPipe = makePostPipe("fs_taa", "rgba8unorm");
 
     const mergeBgl = device.createBindGroupLayout({
       entries: [
@@ -4615,6 +5136,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     let chunk = null, baking = false, grassReady = false;
     let beamVbo = null, beamVertCount = 0;
     let roseVbo = null, roseVertCount = 0;
+    let birdVbo = null, birdVertCount = 0;
     let rockVbo = null, rockVertCount = 0;
     let treeVbo = null, treeVertCount = 0;
     /** CPU copies for sinking harvested tree/rock verts without full rebake */
@@ -4765,12 +5287,12 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       return { kind: "rock", hp: 200, dropId: "stone", dropPerHit: 42, hqChance: 0 };
     }
-    /** Bigger rocks = more HP (longer mine) + more stone per hit. size≈mesh scale (0.4–2.1). */
+    /** Bigger rocks = more HP (longer mine) + more stone per hit. size≈mesh scale (~0.38–1.1). */
     function oreStatsForSize(kind, scale) {
       const base = oreNodeStats(kind);
-      const s = Math.max(0.35, Math.min(2.4, scale != null ? scale : 1));
-      // ~0.55× for pebbles, ~1× medium, ~2.1× boulders
-      const mul = 0.45 + s * 0.75;
+      const s = Math.max(0.32, Math.min(1.25, scale != null ? scale : 0.7));
+      // ~0.55× pebbles → ~1.3× larger boulders (half prior mega-rocks)
+      const mul = 0.5 + s * 0.85;
       const hp = Math.max(60, Math.round(base.hp * mul));
       const dropPerHit = Math.max(8, Math.round(base.dropPerHit * (0.55 + mul * 0.55)));
       return {
@@ -4816,6 +5338,7 @@ fn fxaa(uv : vec2f) -> vec3f {
 
     function pushLootToast(dropId, qty) {
       if (!qty) return;
+      if (typeof playLootBlip === "function") playLootBlip();
       ensureLootUi();
       if (!lootToastHost) return;
       const name = LOOT_LABELS[dropId] || dropId;
@@ -4941,9 +5464,9 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (countLiveOres() >= RESOURCE_SPAWN.oreCap) return false;
       const kind = kindHint || pickOreKindForPos(pos.x, pos.z, pos.y);
       // Sulfur nodes stay compact
-      let scale = 0.55 + Math.random() * 1.45;
-      if (kind === "sulfur") scale = 0.42 + Math.random() * 0.38;
-      else if (kind === "metal") scale = 0.55 + Math.random() * 1.05;
+      let scale = 0.38 + Math.random() * 0.72;
+      if (kind === "sulfur") scale = 0.34 + Math.random() * 0.32;
+      else if (kind === "metal") scale = 0.38 + Math.random() * 0.55;
       const st = oreStatsForSize(kind, scale);
       const ix = Math.floor(pos.x / BUILD_CELL);
       const iz = Math.floor(pos.z / BUILD_CELL);
@@ -5151,9 +5674,9 @@ fn fxaa(uv : vec2f) -> vec3f {
     };
     BUILD_LABELS.toolcupboard = "Armario";
     BUILD_BY_ID.workbench = {
-      id: "workbench", label: "Mesa T1", desc: "Crafteo avanzado · 2 m", group: "deploy", cost: 0,
+      id: "workbench", label: "Mesa de trabajo", desc: "Crafteo avanzado · 2 m · T1–T3", group: "deploy", cost: 0,
     };
-    BUILD_LABELS.workbench = "Mesa T1";
+    BUILD_LABELS.workbench = "Mesa de trabajo";
     BUILD_BY_ID.research_table = {
       id: "research_table", label: "Mesa investigación", desc: "Aprende planos con scrap", group: "deploy", cost: 0,
     };
@@ -5188,6 +5711,15 @@ fn fxaa(uv : vec2f) -> vec3f {
     let isInWorkbenchRange = false;
     let workbenchTierNear = 0;
     const WORKBENCH_RANGE = 2.0;
+    /** Normalize WB tier: NEVER use `x | 1` (turns T2 into T3). */
+    function asWbTier(v) {
+      const n = v | 0;
+      return n >= 1 ? n : 1;
+    }
+    function workbenchItemId(tier) {
+      const t = asWbTier(tier);
+      return t >= 3 ? "workbench_3" : (t >= 2 ? "workbench_2" : "workbench_1");
+    }
     const HEAT_RANGE = 4.0;
     const MAX_HP = 100;
     const MAX_HUNGER = 500;
@@ -6054,6 +6586,117 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
     }
 
+    /** Soft face = unfinished studs (vulnerable). Hard face = finished exterior. */
+    function softHardRgbs(baseRgb) {
+      const soft = [
+        Math.max(0.08, baseRgb[0] * 0.62 + 0.08),
+        Math.max(0.05, baseRgb[1] * 0.48),
+        Math.max(0.04, baseRgb[2] * 0.38),
+      ];
+      const hard = [
+        Math.min(1, baseRgb[0] * 1.08 + 0.04),
+        Math.min(1, baseRgb[1] * 1.05 + 0.03),
+        Math.min(1, baseRgb[2] * 1.02 + 0.02),
+      ];
+      return { soft, hard };
+    }
+
+    /**
+     * Two-sided solid wall: hard face smooth, soft face darker with exposed studs.
+     * softOnMax: soft sits on the max-thickness edge of the slab (max Z if axis=x, max X if axis=z).
+     */
+    function buildTwoSidedWall(arr, x0, y0, z0, x1, y1, z1, rgb, axis, endMask, softOnMax) {
+      const { soft, hard } = softHardRgbs(rgb);
+      const alongX = axis === "x";
+      const mid = alongX ? (z0 + z1) * 0.5 : (x0 + x1) * 0.5;
+      const gap = 0.004;
+      // Max-face half vs min-face half
+      let maxBox, minBox;
+      if (alongX) {
+        maxBox = [x0, y0, mid + gap, x1, y1, z1];
+        minBox = [x0, y0, z0, x1, y1, mid - gap];
+      } else {
+        maxBox = [mid + gap, y0, z0, x1, y1, z1];
+        minBox = [x0, y0, z0, mid - gap, y1, z1];
+      }
+      const softBox = softOnMax ? maxBox : minBox;
+      const hardBox = softOnMax ? minBox : maxBox;
+
+      buildPushBox(arr, softBox[0], softBox[1], softBox[2], softBox[3], softBox[4], softBox[5], soft);
+      // Soft studs + plates
+      const stud = 0.07;
+      const studDepth = 0.038;
+      const len0 = alongX ? x0 + 0.18 : z0 + 0.18;
+      const len1 = alongX ? x1 - 0.18 : z1 - 0.18;
+      for (let i = 0; i < 4; i++) {
+        const a = len0 + ((i + 0.5) / 4) * (len1 - len0);
+        if (alongX) {
+          const faceZ = softOnMax ? z1 : z0;
+          const zA = softOnMax ? faceZ : faceZ - studDepth;
+          const zB = softOnMax ? faceZ + studDepth : faceZ;
+          buildPushBox(arr, a - stud * 0.5, y0 + 0.08, zA, a + stud * 0.5, y1 - 0.08, zB, soft);
+        } else {
+          const faceX = softOnMax ? x1 : x0;
+          const xA = softOnMax ? faceX : faceX - studDepth;
+          const xB = softOnMax ? faceX + studDepth : faceX;
+          buildPushBox(arr, xA, y0 + 0.08, a - stud * 0.5, xB, y1 - 0.08, a + stud * 0.5, soft);
+        }
+      }
+      if (alongX) {
+        const faceZ = softOnMax ? z1 : z0;
+        const zA = softOnMax ? faceZ : faceZ - 0.03;
+        const zB = softOnMax ? faceZ + 0.03 : faceZ;
+        buildPushBox(arr, x0 + 0.05, y1 - 0.16, zA, x1 - 0.05, y1 - 0.06, zB, soft);
+        buildPushBox(arr, x0 + 0.05, y0 + 0.06, zA, x1 - 0.05, y0 + 0.16, zB, soft);
+      } else {
+        const faceX = softOnMax ? x1 : x0;
+        const xA = softOnMax ? faceX : faceX - 0.03;
+        const xB = softOnMax ? faceX + 0.03 : faceX;
+        buildPushBox(arr, xA, y1 - 0.16, z0 + 0.05, xB, y1 - 0.06, z1 - 0.05, soft);
+        buildPushBox(arr, xA, y0 + 0.06, z0 + 0.05, xB, y0 + 0.16, z1 - 0.05, soft);
+      }
+
+      buildPushBox(arr, hardBox[0], hardBox[1], hardBox[2], hardBox[3], hardBox[4], hardBox[5], hard);
+      // Hard bevel rails
+      if (alongX) {
+        const faceZ = softOnMax ? z0 : z1;
+        const zA = softOnMax ? faceZ - 0.012 : faceZ;
+        const zB = softOnMax ? faceZ : faceZ + 0.012;
+        buildPushBox(arr, x0 + 0.04, y1 - 0.08, zA, x1 - 0.04, y1 + 0.01, zB, hard);
+        buildPushBox(arr, x0 + 0.04, y0 - 0.01, zA, x1 - 0.04, y0 + 0.08, zB, hard);
+      } else {
+        const faceX = softOnMax ? x0 : x1;
+        const xA = softOnMax ? faceX - 0.012 : faceX;
+        const xB = softOnMax ? faceX : faceX + 0.012;
+        buildPushBox(arr, xA, y1 - 0.08, z0 + 0.04, xB, y1 + 0.01, z1 - 0.04, hard);
+        buildPushBox(arr, xA, y0 - 0.01, z0 + 0.04, xB, y0 + 0.08, z1 - 0.04, hard);
+      }
+
+      const post = 0.14;
+      const rail = 0.12;
+      const skipStart = !!(endMask & 1);
+      const skipEnd = !!(endMask & 2);
+      if (axis === "x") {
+        if (!skipStart) buildPushBox(arr, x0 - 0.01, y0, z0 - 0.01, x0 + post, y1, z1 + 0.01, rgb);
+        if (!skipEnd) buildPushBox(arr, x1 - post, y0, z0 - 0.01, x1 + 0.01, y1, z1 + 0.01, rgb);
+        buildPushBox(arr, x0, y1 - rail, z0 - 0.015, x1, y1 + 0.01, z1 + 0.015, rgb);
+        buildPushBox(arr, x0, y0 - 0.01, z0 - 0.015, x1, y0 + rail, z1 + 0.015, rgb);
+      } else {
+        if (!skipStart) buildPushBox(arr, x0 - 0.01, y0, z0 - 0.01, x1 + 0.01, y1, z0 + post, rgb);
+        if (!skipEnd) buildPushBox(arr, x0 - 0.01, y0, z1 - post, x1 + 0.01, y1, z1 + 0.01, rgb);
+        buildPushBox(arr, x0 - 0.015, y1 - rail, z0, x1 + 0.015, y1 + 0.01, z1, rgb);
+        buildPushBox(arr, x0 - 0.015, y0 - 0.01, z0, x1 + 0.015, y0 + rail, z1, rgb);
+      }
+    }
+
+    /** Hard-normal sits on max slab edge for yaw 0/1; on min edge for yaw 2/3. */
+    function wallSoftOnMaxFace(yaw, softInward) {
+      const y = ((yaw % 4) + 4) % 4;
+      const hardOnMax = (y === 0 || y === 1);
+      // softInward → soft opposite hard. soft on max = soft faces hard-normal side when !softInward
+      return softInward ? !hardOnMax : hardOnMax;
+    }
+
     /** Deterministic 0..1 for twig stick jitter (stable mesh cache). */
     function twigHash(seed) {
       const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
@@ -6549,7 +7192,8 @@ fn fxaa(uv : vec2f) -> vec3f {
         } else if (twig) {
           buildTwigWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, ends, seed);
         } else {
-          buildSolidWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, ends);
+          const softOnMax = wallSoftOnMaxFace(yaw, piece.softInward !== false);
+          buildTwoSidedWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, ends, softOnMax);
         }
         return;
       }
@@ -6854,7 +7498,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         + "|o" + Math.round((p._ox || 0) * 50) + "," + Math.round((p._oz || 0) * 50)
         + (p.type === "door" ? ("|op" + (p.isOpen ? 1 : 0) + "|lk" + (p.locked ? 1 : 0)) : "")
         + (p.type === "campfire" ? ("|lit" + (p.lit ? 1 : 0)) : "")
-        + "|ceil1|tc3|door3|chest2|bag3|wb2|twig2|fire2"; // bust cache — campfire mesh
+        + "|ceil1|tc3|door3|chest2|bag3|wb2|twig2|fire2|softface1"; // bust cache — soft/hard faces
     }
 
     function getCachedPieceMesh(p) {
@@ -8004,6 +8648,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (raw.hp != null) existing.hp = raw.hp;
         if (raw.maxHp != null) existing.maxHp = raw.maxHp;
         if (raw.stability != null) existing.stability = raw.stability;
+        if (raw.softInward != null) existing.softInward = !!raw.softInward;
         if (raw.wbTier != null) existing.wbTier = raw.wbTier | 0;
         if (raw.lit != null) existing.lit = !!raw.lit;
         if (raw.isOpen != null) existing.isOpen = !!raw.isOpen;
@@ -8194,8 +8839,13 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (!isWallType(p.type)) return false;
       p.softInward = !p.softInward;
       invalidatePieceMesh(p);
-      onHud({ status: "Soft side · " + (p.softInward ? "interior" : "exterior") });
+      onHud({
+        status: "Soft side · "
+          + (p.softInward ? "interior (hacia la celda)" : "exterior")
+          + " · hard al otro lado",
+      });
       rebuildBuildMesh();
+      notifyWorldPlace(p);
       return true;
     }
 
@@ -9022,6 +9672,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       piece.hp = Math.max(1, Math.ceil(piece.maxHp * Math.max(0.15, ratio)));
       invalidatePieceMesh(piece);
       rebuildBuildMesh();
+      notifyWorldPlace(piece);
       onHud({ status: "Upgrade · " + BUILD_TIERS[next].label + " · " + piece.maxHp + " HP" });
       return true;
     }
@@ -9051,6 +9702,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       piece.hp = piece.maxHp;
       invalidatePieceMesh(piece);
       rebuildBuildMesh();
+      notifyWorldPlace(piece);
       onHud({ status: "Reparada · " + piece.maxHp + " HP" });
       return true;
     }
@@ -9213,8 +9865,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const t = piece.type;
       if (t === "toolcupboard") return invAdd("tool_cupboard_item", 1);
       if (t === "workbench") {
-        const wt = piece.wbTier | 1;
-        return invAdd(wt >= 3 ? "workbench_3" : (wt >= 2 ? "workbench_2" : "workbench_1"), 1);
+        return invAdd(workbenchItemId(piece.wbTier), 1);
       }
       if (t === "research_table") return invAdd("research_table", 1);
       if (t === "campfire") return invAdd("campfire", 1);
@@ -9282,6 +9933,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         '  <button type="button" data-act="demolish"><kbd>X</kbd> Demoler</button>' +
         '  <button type="button" data-act="upgrade"><kbd>M</kbd> Mejorar</button>' +
         '  <button type="button" data-act="repair"><kbd>R</kbd> Reparar</button>' +
+        '  <button type="button" data-act="flip"><kbd>Y</kbd> Soft/Hard</button>' +
         '  <button type="button" data-act="close"><kbd>Esc</kbd> Cerrar</button>' +
         "</div>";
       upgradeMenuEl.addEventListener("click", (ev) => {
@@ -9300,6 +9952,15 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (act === "demolish") { demolishPiece(piece); return true; }
       if (act === "upgrade") { upgradePiece(piece); refreshUpgradeMenu(); return true; }
       if (act === "repair") { repairPiece(piece); refreshUpgradeMenu(); return true; }
+      if (act === "flip") {
+        if (!isWallType(piece.type)) {
+          onHud({ status: "Solo paredes tienen soft/hard" });
+          return true;
+        }
+        flipWallSoftSide(piece);
+        refreshUpgradeMenu();
+        return true;
+      }
       return false;
     }
 
@@ -9316,6 +9977,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const demoBtn = upgradeMenuEl.querySelector('[data-act="demolish"]');
       const upBtn = upgradeMenuEl.querySelector('[data-act="upgrade"]');
       const repBtn = upgradeMenuEl.querySelector('[data-act="repair"]');
+      const flipBtn = upgradeMenuEl.querySelector('[data-act="flip"]');
       const secs = demolishSecsLeft(piece);
       const canDemo = canHammerDemolish(piece);
       if (graceEl) {
@@ -9335,8 +9997,14 @@ fn fxaa(uv : vec2f) -> vec3f {
       const tierEl = upgradeMenuEl.querySelector(".fw-up-tier");
       const costEl = upgradeMenuEl.querySelector(".fw-up-cost");
       if (pieceEl) {
+        let softTxt = "";
+        if (isWallType(piece.type)) {
+          softTxt = piece.softInward !== false
+            ? " · soft interior"
+            : " · soft exterior";
+        }
         pieceEl.textContent = (BUILD_LABELS[piece.type] || piece.type)
-          + " · " + Math.ceil(piece.hp) + "/" + piece.maxHp + " HP";
+          + " · " + Math.ceil(piece.hp) + "/" + piece.maxHp + " HP" + softTxt;
       }
       if (tierEl) {
         if (!upgradable) {
@@ -9377,6 +10045,14 @@ fn fxaa(uv : vec2f) -> vec3f {
         repBtn.disabled = full;
         repBtn.title = full ? "Intacta" : "Reparar (R)";
       }
+      if (flipBtn) {
+        const isWall = isWallType(piece.type);
+        flipBtn.disabled = !isWall;
+        flipBtn.style.display = isWall ? "" : "none";
+        flipBtn.title = isWall
+          ? ("Soft · " + (piece.softInward !== false ? "interior" : "exterior") + " · Y voltea")
+          : "Solo paredes";
+      }
     }
 
     function openUpgradeMenu(piece) {
@@ -9394,10 +10070,10 @@ fn fxaa(uv : vec2f) -> vec3f {
       upgradeMenuOpen = true;
       upgradeMenuEl.classList.add("is-open");
       refreshUpgradeMenu();
-      onHud({ status: "Martillo · X demoler · M mejorar · R reparar · Esc cierra" });
+      onHud({ status: "Martillo · X demoler · M mejorar · R reparar · Y soft/hard · Esc cierra" });
       // clearLocoKeys is hoisted in this scope — RMB often swallows keyup
       try { clearLocoKeys(); } catch (_) {}
-      try { exitAimLock(); } catch (_) {}
+      try { syncCursorForUi(); } catch (_) {}
       return true;
     }
 
@@ -9408,6 +10084,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (upgradeMenuEl) upgradeMenuEl.classList.remove("is-open");
       if (wasOpen) {
         try { clearLocoKeys(); } catch (_) {}
+        try { syncCursorForUi(); } catch (_) {}
       }
     }
 
@@ -9563,14 +10240,14 @@ fn fxaa(uv : vec2f) -> vec3f {
       ensureTcPanel();
       activeTcId = tc.id;
       tcPanelEl.classList.add("is-open");
-      try { exitAimLock(); } catch (_) {}
-      try { clearLocoKeys(); } catch (_) {}
+      try { syncCursorForUi(); } catch (_) {}
       refreshTcPanel();
       onHud({ status: "TC abierto · deposita upkeep · Esc cierra" });
     }
     function closeTcPanel() {
       activeTcId = null;
       if (tcPanelEl) tcPanelEl.classList.remove("is-open");
+      try { syncCursorForUi(); } catch (_) {}
     }
 
     // --- Enhanced validate / place / remove -------------------------------------
@@ -9733,8 +10410,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       let consumeId = null;
       if (placingTc) consumeId = "tool_cupboard_item";
       else if (placingWb) {
-        const wt = deployWbTier | 1;
-        consumeId = wt >= 3 ? "workbench_3" : (wt >= 2 ? "workbench_2" : "workbench_1");
+        const wt = asWbTier(deployWbTier);
+        consumeId = workbenchItemId(wt);
         snap._placeWbTier = wt;
       }
       else if (placingResearch) consumeId = "research_table";
@@ -9783,7 +10460,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         placed.auth = [LOCAL_PLAYER_ID];
       }
       if (placingWb) {
-        placed.wbTier = snap._placeWbTier | deployWbTier | 1;
+        placed.wbTier = asWbTier(snap._placeWbTier || deployWbTier);
       }
       if (placingCamp) {
         placed.slots = [{ id: "wood", qty: 40 }, null];
@@ -9826,7 +10503,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         return true;
       }
       if (placingWb) {
-        onHud({ status: "Mesa T1 · E abre Tech + ADV" });
+        onHud({ status: "Mesa T" + asWbTier(placed.wbTier) + " · E abre Tech + ADV" });
         clearDeployIfEmpty("workbench_1");
         clearDeployIfEmpty("workbench_2");
         clearDeployIfEmpty("workbench_3");
@@ -10318,7 +10995,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         // vise / tools on the tabletop
         box(0.25, base + 0.86, -0.1, 0.55, base + 1.05, 0.15, steel);
         box(-0.5, base + 0.86, -0.15, -0.15, base + 0.98, 0.1, [0.3, 0.32, 0.36]);
-        const tier = piece.wbTier | 1;
+        const tier = asWbTier(piece.wbTier);
         const badge = tier >= 3 ? [0.75, 0.35, 0.85] : (tier >= 2 ? [0.85, 0.55, 0.2] : [0.85, 0.65, 0.2]);
         box(-0.12, base + 0.88, 0.22, 0.12, base + 1.02, 0.38, badge);
         return;
@@ -10871,9 +11548,9 @@ fn fxaa(uv : vec2f) -> vec3f {
         const d = Math.hypot(c.x - player.x, c.z - player.z);
         if (p.type === "workbench" && d <= WORKBENCH_RANGE) {
           isInWorkbenchRange = true;
-          workbenchTierNear = Math.max(workbenchTierNear, p.wbTier | 1);
-          comfort = Math.max(comfort, 0.35);
-          vitals.nearHeat = true;
+          workbenchTierNear = Math.max(workbenchTierNear, asWbTier(p.wbTier));
+          comfort = Math.max(comfort, 0.2);
+          // WB is not a heat source — only campfires warm you
         }
         if (p.type === "campfire" && p.lit && d <= HEAT_RANGE) {
           vitals.nearHeat = true;
@@ -11123,6 +11800,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       activeBoxId = box.id;
       boxPanelEl.classList.add("is-open");
+      try { syncCursorForUi(); } catch (_) {}
       refreshBoxPanel();
     }
     function refreshBoxPanel() {
@@ -11146,6 +11824,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     function closeBoxPanel() {
       activeBoxId = null;
       if (boxPanelEl) boxPanelEl.classList.remove("is-open");
+      try { syncCursorForUi(); } catch (_) {}
     }
 
     function openCampfirePanel(cf) {
@@ -11214,7 +11893,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     }
 
     function harvestNodeAabb(n) {
-      const h = n.kind === "tree" ? 4.5 : (n.kind === "barrel" ? 0.7 : Math.max(1.8, (n.r || 0.7) * 2.4));
+      const h = n.kind === "tree" ? 6.8 : (n.kind === "barrel" ? 0.7 : Math.max(1.8, (n.r || 0.7) * 2.4));
       return {
         minX: n.x - n.r, maxX: n.x + n.r,
         minY: n.y - 0.35, maxY: n.y + h,
@@ -11496,6 +12175,9 @@ fn fxaa(uv : vec2f) -> vec3f {
         gatherSwing.sfxDone = true;
         playGatherHit(gatherSwing.mode);
         pulseGatherHit(gatherSwing.mode);
+        if (gatherSwing.mode === "chop" || gatherSwing.mode === "mine") {
+          spawnChopChips(gatherSwing.node);
+        }
         applyHarvestHit(gatherSwing.node);
         if (gatherSwing.node && gatherSwing.node.dead) {
           gatherLockNode = null;
@@ -11568,11 +12250,12 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (!chatEl) return;
       chatEl.classList.toggle("is-open", chatOpen);
       if (chatOpen) {
-        try { exitAimLock(); } catch (_) {}
+        try { syncCursorForUi(); } catch (_) {}
         const input = chatEl.querySelector("#fw-chat-input");
         try { input.focus(); } catch (_) {}
       } else {
         try { canvas.focus(); } catch (_) {}
+        try { syncCursorForUi(); } catch (_) {}
       }
     }
     function ensureCraftUi() {
@@ -11602,6 +12285,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (!progApi) {
         craftOpen = !!on;
         onHud({ status: "Cargando fabricación…" });
+        try { syncCursorForUi(); } catch (_) {}
         return;
       }
       if (on) {
@@ -11611,19 +12295,21 @@ fn fxaa(uv : vec2f) -> vec3f {
         progApi.close();
         craftOpen = false;
       }
+      try { syncCursorForUi(); } catch (_) {}
     }
     function openWorkbenchUI(piece) {
       ensureCraftUi();
       if (!progApi) return false;
       const tier = piece && piece.type === "workbench"
-        ? (piece.wbTier | 1)
-        : (workbenchTierNear | 1);
+        ? asWbTier(piece.wbTier)
+        : asWbTier(workbenchTierNear);
       if (typeof progApi.openWorkbench === "function") {
         progApi.openWorkbench(tier);
       } else {
         progApi.openWorkbench();
       }
       craftOpen = true;
+      try { syncCursorForUi(); } catch (_) {}
       return true;
     }
     function openResearchUI() {
@@ -11631,6 +12317,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (!progApi) return false;
       progApi.openResearch();
       craftOpen = true;
+      try { syncCursorForUi(); } catch (_) {}
       return true;
     }
 
@@ -11995,7 +12682,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       const labels = {
         toolcupboard: "Abrir armario",
-        workbench: "Abrir mesa",
+        workbench: "Abrir mesa T" + asWbTier(target.wbTier),
         research_table: "Investigar",
         door: target.isOpen
           ? (target.locked ? "Cerrar puerta (candado)" : "Cerrar puerta")
@@ -12054,11 +12741,16 @@ fn fxaa(uv : vec2f) -> vec3f {
         window.__fw.onTab = function () {
           if (useRadialOpen) { closeUseRadial(); return true; }
           if (activeBoxId) { closeBoxPanel(); return true; }
+          if (activeTcId) { closeTcPanel(); return true; }
           if (progApi && progApi.isOpen()) {
             setCraftOpen(false);
             return true;
           }
           return false;
+        };
+        window.__fw.onBagUiOpen = function (open) {
+          bagUiOpen = !!open;
+          try { syncCursorForUi(); } catch (_) {}
         };
         window.__fw.openWorkbenchUI = openWorkbenchUI;
         window.__fw.openResearchUI = openResearchUI;
@@ -12234,8 +12926,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       const roseVerts = [];
       const corners2 = [[-1, -1], [1, -1], [-1, 1], [1, -1], [1, 1], [-1, 1]];
       // Lower dens + wider spacing = sparse but island-wide coverage
-      const flowerDens = [0.38, 0.22, 0.20, 0.16, 0.28, 0.14]; // meadow dry forest snow marsh desert
-      const flowerSpacing = 9.5;
+      const flowerDens = [0.48, 0.26, 0.24, 0.18, 0.34, 0.16]; // meadow dry forest snow marsh desert
+      const flowerSpacing = 8.2;
       const fHalf = ISLAND_HALF * 0.96;
       let nFlowers = 0;
       const pickKind = (bid, h) => {
@@ -12287,21 +12979,9 @@ fn fxaa(uv : vec2f) -> vec3f {
           }
         }
       }
-      const rArr = new Float32Array(roseVerts);
-      if (roseVbo) try { roseVbo.destroy(); } catch (_) {}
-      if (rArr.byteLength > 0) {
-        roseVbo = device.createBuffer({
-          size: rArr.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-          mappedAtCreation: true,
-        });
-        new Float32Array(roseVbo.getMappedRange()).set(rArr);
-        roseVbo.unmap();
-        roseVertCount = rArr.length / 9;
-      } else {
-        roseVbo = null;
-        roseVertCount = 0;
-      }
+      // rose VBO deferred until trees add ferns / leaf litter
+      const birdVerts = [];
+      const treeCanopies = [];
 
       // Rocks — solid volumetric stone meshes (baked local positions)
       // kind: 0 granite 1 sandstone 2 basalt 3 mossy 4 limestone 5 desert-red
@@ -12528,7 +13208,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       };
       const rockRadius = (rx, rz) => Math.max(0.45, (rx + rz) * 0.48);
       // Estimate footprint before meshing (matches ~rockRadius after build)
-      const estRockR = (scale) => Math.max(0.5, scale * 0.95);
+      const estRockR = (scale) => Math.max(0.35, scale * 0.95);
       const rockCandidates = [];
       for (let gz = -rHalf; gz <= rHalf; gz += rockSpacing) {
         for (let gx = -rHalf; gx <= rHalf; gx += rockSpacing) {
@@ -12551,19 +13231,19 @@ fn fxaa(uv : vec2f) -> vec3f {
           else if (pocket < 0.18) dens *= 0.4;
           if (h2 > dens) continue;
           const kind = pickRock(bid, hash(rx * 2.7 + rz * 1.9 + 7));
-          // Wide size mix: pebbles → big boulders
-          const scale = 0.4 + hash(rx * 1.1 + rz * 3.3) * 1.7;
+          // ~½ prior size: readable pebbles → mid boulders (no house-sized rocks)
+          const scale = 0.38 + hash(rx * 1.1 + rz * 3.3) * 0.72;
           const yaw = hash(rz * 6.2 - rx) * Math.PI * 2;
           const phase = hash(rx * 0.8 + rz * 1.4);
           rockCandidates.push({ x: rx, y: ry0 + 0.015, z: rz, kind, scale, yaw, phase });
           // Occasional pebble nearby — keep clear of the main stone
           if (hash(rx * 4.1 + 9) > 0.72) {
-            const ox = rx + (hash(rz + 1) > 0.5 ? 1 : -1) * (1.8 + hash(rx) * 1.4) * scale;
-            const oz = rz + (hash(rx + 2) > 0.5 ? 1 : -1) * (1.8 + hash(rz) * 1.4) * scale;
+            const ox = rx + (hash(rz + 1) > 0.5 ? 1 : -1) * (1.5 + hash(rx) * 1.1) * scale;
+            const oz = rz + (hash(rx + 2) > 0.5 ? 1 : -1) * (1.5 + hash(rz) * 1.1) * scale;
             if (islandEdge(ox, oz) <= 0.08) {
               const oy2 = sampleHeight(chunk, ox, oz) + 0.015;
               if (oy2 >= 0.02) {
-                const sc2 = scale * (0.28 + hash(ox) * 0.28);
+                const sc2 = Math.max(0.28, scale * (0.38 + hash(ox) * 0.28));
                 const k2 = pickRock(bid, hash(ox * 1.7));
                 rockCandidates.push({ x: ox, y: oy2, z: oz, kind: k2, scale: sc2, yaw: yaw + 1.1, phase: phase + 0.2 });
               }
@@ -12737,30 +13417,30 @@ fn fxaa(uv : vec2f) -> vec3f {
               treeColliders.push({ x: wx + 0.55 * scale, z: wz, r: trunkRadius(5, scale * 0.5) });
               treeColliders.push({ x: wx - 0.5 * scale, z: wz, r: trunkRadius(5, scale * 0.48) });
             } else if (isPine) {
-              // Soft conical pine — stacked canopy discs (no shard skirts)
-              const trunkH = (species === 6 ? 3.1 : species === 9 ? 3.2 : 2.9) * scale;
-              const nLayers = species === 6 ? 7 : species === 9 ? 8 : 7;
+              // Conical pine — long visible bole + canopy that meets the trunk (no floating crown)
+              const trunkH = (species === 6 ? 4.9 : species === 9 ? 5.0 : 4.6) * scale;
+              const nLayers = species === 6 ? 11 : species === 9 ? 12 : 11;
+              // Collar disc bridges bark → needles
+              pushCross(wx, wy + trunkH * 0.40, wz, corners11, species, scale * 1.15, yaw, phase + 0.2, 2, 4);
               for (let li = 0; li < nLayers; li++) {
                 const t = li / (nLayers - 1);
-                const ty = wy + trunkH * (0.22 + t * 0.78);
-                // Cone: wide base → narrow tip
-                const layerR = scale * (1.55 - t * 1.15) * (species === 9 ? 1.12 : 1.0);
+                // Foliage from ~38% up — clears wood while closing the gap
+                const ty = wy + trunkH * (0.38 + t * 0.60);
+                const layerR = scale * (1.58 - t * 1.12) * (species === 9 ? 1.12 : 1.0);
                 const layerPh = phase + t * 0.85;
-                const yawL = yaw + li * 0.37;
-                // Center plate
+                const yawL = yaw + li * 0.31;
                 pushCross(wx, ty, wz, corners11, species, layerR, yawL, layerPh, 2, 4);
-                // Ring of overlapping puffs for volume
-                const nRing = t > 0.85 ? 3 : 5;
+                const nRing = t > 0.88 ? 4 : 6;
                 for (let ri = 0; ri < nRing; ri++) {
                   const a = yawL + (ri / nRing) * Math.PI * 2 + hash(li * 9 + ri) * 0.4;
-                  const out = layerR * (0.28 + hash(li + ri * 3.1) * 0.18);
+                  const out = layerR * (0.22 + hash(li + ri * 3.1) * 0.16);
                   pushCross(
                     wx + Math.cos(a) * out,
-                    ty - (0.02 + (1.0 - t) * 0.06) * scale,
+                    ty - (0.10 + (1.0 - t) * 0.16) * scale,
                     wz + Math.sin(a) * out,
                     corners11,
                     species,
-                    layerR * (0.55 + hash(ri * 2.2 + li) * 0.25),
+                    layerR * (0.62 + hash(ri * 2.2 + li) * 0.22),
                     a,
                     layerPh + ri * 0.04,
                     2,
@@ -12768,12 +13448,11 @@ fn fxaa(uv : vec2f) -> vec3f {
                   );
                 }
               }
-              // Soft tip
-              pushCross(wx, wy + trunkH * 1.02, wz, corners11, species, scale * 0.42, yaw, phase + 0.9, 2, 3);
-              pushCross(wx, wy + trunkH * 1.12, wz, corners11, species, scale * 0.22, yaw + 0.5, phase + 0.95, 3, 2);
+              pushCross(wx, wy + trunkH * 0.97, wz, corners11, species, scale * 0.55, yaw, phase + 0.9, 2, 4);
+              pushCross(wx, wy + trunkH * 1.02, wz, corners11, species, scale * 0.32, yaw + 0.4, phase + 0.95, 2, 3);
             } else if (isPalm) {
-              // Palm — tall trunk already drawn; radiating frond discs + a few droops
-              const trunkH = 3.9 * scale;
+              // Palm — tall bare trunk; fronds only at the crown
+              const trunkH = 5.4 * scale;
               const crownY = wy + trunkH * 0.98;
               const nFronds = 10;
               for (let fi = 0; fi < nFronds; fi++) {
@@ -12792,20 +13471,20 @@ fn fxaa(uv : vec2f) -> vec3f {
                 const rr = (0.55 + hash(di * 2.2) * 0.35) * scale;
                 pushCross(
                   wx + Math.cos(a) * rr,
-                  crownY - (0.2 + hash(di) * 0.35) * scale,
+                  crownY - (0.15 + hash(di) * 0.28) * scale,
                   wz + Math.sin(a) * rr,
                   corners11, species, scale * 0.55, a, phase + 0.1, 2, 2
                 );
               }
             } else if (species === 3) {
-              // Willow + tropism: umbrella + long hanging curtains
-              const trunkH = 3.35 * scale;
+              // Willow — tall bole, umbrella meets trunk
+              const trunkH = 4.8 * scale;
               for (let bi = 0; bi < 5; bi++) {
-                const by = wy + trunkH * (0.5 + bi * 0.08 + hash(wx + bi * 9) * 0.03);
+                const by = wy + trunkH * (0.52 + bi * 0.08 + hash(wx + bi * 9) * 0.03);
                 const bYaw = yaw + bi * PHYLLO + phase;
                 pushCross(wx, by, wz, corners01, species, scale * 0.92, bYaw, phase + bi * 0.06, 1, 2);
               }
-              const crownY = wy + trunkH * 0.92;
+              const crownY = wy + trunkH * 0.86;
               for (let pi = 0; pi < 8; pi++) {
                 const a = yaw + pi * PHYLLO + phase;
                 const rr = (0.15 + hash(wz + pi * 3.1) * 0.4) * scale;
@@ -12815,30 +13494,30 @@ fn fxaa(uv : vec2f) -> vec3f {
                 pushCross(px, py, pz, corners11, species, scale * (0.5 + hash(pi) * 0.22), a, (phase * 0.3 + pi * 0.04) % 0.65, 2, 3);
               }
               pushCross(wx, crownY + 0.18 * scale, wz, corners11, species, scale * 0.75, yaw, phase * 0.35 % 0.65, 2, 3);
-              // Long hanging curtains (tropism down)
+              // Long hanging curtains (tropism down) — keep above mid-bole
               for (let hi = 0; hi < 12; hi++) {
                 const a = yaw + hi * PHYLLO * 0.85 + phase * 1.3;
                 const rr = (0.35 + hash(wx + hi * 4.1) * 0.4) * scale;
                 const px = wx + Math.cos(a) * rr;
                 const pz = wz + Math.sin(a) * rr;
-                const py = crownY - (0.25 + hash(hi + phase) * 0.55) * scale;
+                const py = crownY - (0.18 + hash(hi + phase) * 0.4) * scale;
                 const hPhase = 0.72 + hash(hi * 1.7) * 0.26;
                 pushCross(px, py, pz, corners11, species, scale * (0.48 + hash(hi) * 0.18), a, hPhase, 2, 3);
               }
             } else {
-              // Deciduous: phyllotaxis crown + tip leaf cards (sedon recursive feel)
+              // Deciduous — long timber bole; crown starts high so wood is harvest-readable
               const trunkH = (
-                species === 4 ? 1.5 :
-                species === 2 ? 3.55 :
-                species === 7 ? 3.6 :
-                species === 8 ? 4.5 :
-                3.2
+                species === 4 ? 2.35 :
+                species === 2 ? 5.1 :
+                species === 7 ? 5.2 :
+                species === 8 ? 6.0 :
+                4.85
               ) * scale;
               const nBr = species === 4 ? 4 : (species === 8 ? 5 : species === 2 || species === 7 ? 6 : 7);
               const branchTips = [];
               for (let bi = 0; bi < nBr; bi++) {
-                const tAlong = 0.35 + bi * 0.08;
-                const by = wy + trunkH * (tAlong + hash(wx + bi * 9) * 0.04);
+                const tAlong = (species === 4 ? 0.40 : 0.50) + bi * 0.065;
+                const by = wy + trunkH * (tAlong + hash(wx + bi * 9) * 0.03);
                 const bYaw = yaw + bi * PHYLLO + phase;
                 const bLen = scale * (0.9 + bi * 0.05);
                 pushCross(wx, by, wz, corners01, species, bLen, bYaw, phase + bi * 0.05, 1, 3);
@@ -12851,8 +13530,8 @@ fn fxaa(uv : vec2f) -> vec3f {
                   a: bYaw,
                 });
               }
-              const crownY = wy + trunkH * (species === 4 ? 0.84 : 0.9);
-              const nPlanes = species === 4 ? 4 : 5;
+              const crownY = wy + trunkH * (species === 4 ? 0.82 : 0.84);
+              const nPlanes = species === 4 ? 5 : 6;
 
               // Phyllotaxis cloud — spiral leaf clusters (not perfect rings)
               const nPuff = species === 4 ? 14 : species === 8 ? 22 : species === 7 ? 28 : 34;
@@ -12864,10 +13543,10 @@ fn fxaa(uv : vec2f) -> vec3f {
                   * (species === 4 ? 0.8 : species === 8 ? 0.62 : species === 7 ? 0.95 : 1.18);
                 const px = wx + Math.cos(a) * rr;
                 const pz = wz + Math.sin(a) * rr;
-                // Height: lower near rim, taller near core (dome)
+                // Height: lower near rim, taller near core (dome) — stay above bole
                 const hDome = Math.max(0, 1.0 - (rr / (1.35 * scale)) * (rr / (1.35 * scale)));
-                const py = crownY + (hDome * 0.95 + hash(px + pi) * 0.35 - 0.12) * scale
-                  * (species === 4 ? 0.55 : species === 8 ? 1.35 : 1.05);
+                const py = crownY + (hDome * 0.85 + hash(px + pi) * 0.28 - 0.04) * scale
+                  * (species === 4 ? 0.55 : species === 8 ? 1.2 : 0.95);
                 const pScale = scale * (0.55 + hash(pi + phase) * 0.5) * (0.75 + hDome * 0.35);
                 pushCross(px, py, pz, corners11, species, pScale, a + hash(pi) * 0.8, phase + pi * 0.03, 2, nPlanes);
               }
@@ -12897,6 +13576,39 @@ fn fxaa(uv : vec2f) -> vec3f {
                   );
                 }
               }
+            }
+            // Undergrowth + canopy flock around this tree
+            if (!isCactus) {
+              const nFern = 1 + ((hash(wx * 3.1 + 2.2) > 0.45) ? 1 : 0) + ((hash(wz * 2.7) > 0.7) ? 1 : 0);
+              for (let fi = 0; fi < nFern; fi++) {
+                const ang = hash(wx + fi * 7.1 + phase) * Math.PI * 2;
+                const rad = (0.55 + hash(fi + wz) * 1.1) * scale;
+                const fx = wx + Math.cos(ang) * rad;
+                const fz = wz + Math.sin(ang) * rad;
+                if (islandEdge(fx, fz) > 0.1) continue;
+                const fy = sampleHeight(chunk, fx, fz) + 0.04;
+                const fsc = 0.7 + hash(fi * 1.9 + fx) * 0.7;
+                const fph = phase + fi * 0.37;
+                for (const c of corners2) {
+                  roseVerts.push(fx, fy, fz, c[0], c[1], 9, fsc, fph, 0);
+                }
+              }
+              const nLitter = 2 + ((hash(phase + 4.4) * 3) | 0);
+              for (let li = 0; li < nLitter; li++) {
+                const ang = hash(wz * 1.3 + li * 5.5) * Math.PI * 2;
+                const rad = (0.4 + hash(li + wx) * 1.6) * scale;
+                const lx = wx + Math.cos(ang) * rad;
+                const lz = wz + Math.sin(ang) * rad;
+                if (islandEdge(lx, lz) > 0.1) continue;
+                const ly = sampleHeight(chunk, lx, lz) + 0.02;
+                const lsc = 0.55 + hash(li * 2.2) * 0.55;
+                for (const c of corners2) {
+                  roseVerts.push(lx, ly, lz, c[0], c[1], 10, lsc, phase + li * 0.2, 0);
+                }
+              }
+              // Record canopy for tree-to-tree bird routes
+              const canopyY = wy + scale * (isPine ? 3.8 : isPalm ? 5.0 : 4.4);
+              treeCanopies.push({ x: wx, y: canopyY, z: wz, bid });
             }
             nTrees++;
             const treeCount = (treeVerts.length / 10 - treeVertStart) | 0;
@@ -12930,6 +13642,113 @@ fn fxaa(uv : vec2f) -> vec3f {
         treeVbo = null;
         treeVertCount = 0;
         treeMeshCpu = null;
+      }
+      // Flowers + forest undergrowth (ferns / litter)
+      {
+        const rArr = new Float32Array(roseVerts);
+        if (roseVbo) try { roseVbo.destroy(); } catch (_) {}
+        if (rArr.byteLength > 0) {
+          roseVbo = device.createBuffer({
+            size: rArr.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+          });
+          new Float32Array(roseVbo.getMappedRange()).set(rArr);
+          roseVbo.unmap();
+          roseVertCount = rArr.length / 9;
+        } else {
+          roseVbo = null;
+          roseVertCount = 0;
+        }
+      }
+      // Tree-to-tree bird / butterfly routes — bias toward near-player bubble
+      {
+        const caps = treeCanopies;
+        const nCap = caps.length;
+        if (nCap >= 2) {
+          const px0 = (typeof player !== "undefined" && player) ? player.x : 0;
+          const pz0 = (typeof player !== "undefined" && player) ? player.z : 0;
+          const nearIdx = [];
+          for (let ci = 0; ci < nCap; ci++) {
+            const c = caps[ci];
+            if (Math.hypot(c.x - px0, c.z - pz0) < 95) nearIdx.push(ci);
+          }
+          const nFly = Math.min(120, Math.max(24, Math.floor(nCap / 3.5)));
+          for (let fi = 0; fi < nFly; fi++) {
+            let i0;
+            if (nearIdx.length >= 2 && (fi % 3 !== 2)) {
+              i0 = nearIdx[(hash(fi * 17.3 + chunk.seed * 0.1) * nearIdx.length) | 0];
+            } else {
+              i0 = (hash(fi * 17.3 + chunk.seed * 0.1) * nCap) | 0;
+            }
+            const a = caps[i0];
+            let best = -1;
+            let bestD = 1e9;
+            for (let k = 0; k < 16; k++) {
+              const j = (hash(fi * 9.1 + k * 3.7 + 2.2) * nCap) | 0;
+              if (j === i0) continue;
+              const b = caps[j];
+              const d = Math.hypot(b.x - a.x, b.z - a.z);
+              if (d < 5 || d > 40) continue;
+              if (d < bestD) { bestD = d; best = j; }
+            }
+            if (best < 0) {
+              best = (i0 + 1 + ((hash(fi + 4) * (nCap - 1)) | 0)) % nCap;
+              if (best === i0) best = (i0 + 1) % nCap;
+            }
+            const b = caps[best];
+            const d = Math.hypot(b.x - a.x, b.z - a.z) || 12;
+            const spRoll = hash(fi * 5.5 + a.x);
+            let sp = 0;
+            if (spRoll > 0.68) sp = 3;
+            else if (spRoll > 0.44) sp = 1;
+            else if (spRoll > 0.24) sp = 2;
+            if (sp === 3 && d > 18) {
+              let cj = best; let cd = d;
+              for (let k = 0; k < 16; k++) {
+                const j = (hash(fi * 2.1 + k * 8.8) * nCap) | 0;
+                if (j === i0) continue;
+                const bb = caps[j];
+                const dd = Math.hypot(bb.x - a.x, bb.z - a.z);
+                if (dd >= 4 && dd < cd && dd < 14) { cd = dd; cj = j; }
+              }
+              best = cj;
+            }
+            const b2 = caps[best];
+            const dist = Math.hypot(b2.x - a.x, b2.z - a.z) || 10;
+            const bsc = sp === 3 ? (0.68 + hash(fi) * 0.32) : (1.05 + hash(fi + 2) * 0.45);
+            const bph = hash(fi * 1.7 + a.z) * 0.97;
+            const tripHz = sp === 3
+              ? (0.15 + hash(fi * 3.3) * 0.12)
+              : (0.08 + (18 / Math.max(dist, 10)) * 0.05 + hash(fi) * 0.04);
+            for (const c of corners2) {
+              birdVerts.push(
+                a.x, a.y, a.z,
+                c[0], c[1],
+                sp, bsc, bph, tripHz,
+                b2.x, b2.y, b2.z
+              );
+            }
+          }
+        }
+      }
+      // Flying birds / butterflies among canopies
+      {
+        const bArr = new Float32Array(birdVerts);
+        if (birdVbo) try { birdVbo.destroy(); } catch (_) {}
+        if (bArr.byteLength > 0) {
+          birdVbo = device.createBuffer({
+            size: bArr.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+          });
+          new Float32Array(birdVbo.getMappedRange()).set(bArr);
+          birdVbo.unmap();
+          birdVertCount = bArr.length / 12;
+        } else {
+          birdVbo = null;
+          birdVertCount = 0;
+        }
       }
       // Rocks after trees — reject candidates that clip into canopy
       const rockNearTree = (x, z, rr) => {
@@ -13321,6 +14140,32 @@ fn fxaa(uv : vec2f) -> vec3f {
     function isAimLocked() {
       return typeof document !== "undefined" && document.pointerLockElement === canvas;
     }
+    /** Mochila / caja / TC / craft / chat / mapa / upgrade — need OS cursor */
+    let bagUiOpen = false;
+    function isCursorUiOpen() {
+      return !!(
+        mapOpen
+        || chatOpen
+        || craftOpen
+        || upgradeMenuOpen
+        || activeTcId
+        || activeBoxId
+        || bagUiOpen
+      );
+    }
+    function syncCursorForUi() {
+      try { syncStageCamFlags(); } catch (_) {}
+      if (isCursorUiOpen()) {
+        try { exitAimLock(); } catch (_) {}
+        try { clearLocoKeys(); } catch (_) {}
+        try {
+          const stage = document.querySelector(".stage");
+          if (stage) stage.dataset.aimlock = "0";
+        } catch (_) {}
+      } else if (controlsEnabled && !(vitals && vitals.dead)) {
+        try { requestAimLock(); } catch (_) {}
+      }
+    }
     let gameKeysLocked = false;
     const GAME_LOCK_CODES = [
       "KeyW", "KeyA", "KeyS", "KeyD",
@@ -13350,7 +14195,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       gameKeysLocked = false;
     }
     function requestAimLock() {
-      if (!controlsEnabled || mapOpen || chatOpen || craftOpen || vitals.dead) return;
+      if (!controlsEnabled || isCursorUiOpen() || vitals.dead) return;
       if (isAimLocked()) return;
       try {
         const p = canvas.requestPointerLock && canvas.requestPointerLock();
@@ -13368,7 +14213,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       } catch (_) {}
     }
     function applyLookDelta(dx, dy) {
-      if (!controlsEnabled || mapOpen || chatOpen || craftOpen || vitals.dead) return;
+      if (!controlsEnabled || isCursorUiOpen() || vitals.dead) return;
       if (camMode === "fpv") {
         const sens = 0.0024;
         if (player.freeLook) {
@@ -13418,21 +14263,38 @@ fn fxaa(uv : vec2f) -> vec3f {
       onHud({ status: "Cámara · " + label + " (C) · RMB mira" });
     }
 
-    // --- FE audio: grass_field BGM + noise bed + footstep oneshots ---
+    // --- Audio: BGM + wind + ocean proximity + birds + surface footsteps ---
     const audio = {
       ctx: null,
       master: null,
+      musicBus: null,
+      ambBus: null,
+      sfxBus: null,
       soundOn: true,
       unlocked: false,
       bgm: null,
       noise: null,
+      ocean: null,
       steps: [],
       stepIdx: 0,
       stepCd: 0,
       hammers: [],
       hammerIdx: 0,
+      birds: [],
+      birdIdx: 0,
+      birdCd: 1.5,
+      splashes: [],
+      splashIdx: 0,
+      oceanTarget: 0,
+      birdTarget: 0,
       loading: null,
+      lastSwim: false,
     };
+
+    function smooth01(a, b, x) {
+      const t = Math.max(0, Math.min(1, (x - a) / Math.max(1e-5, b - a)));
+      return t * t * (3 - 2 * t);
+    }
 
     async function ensureAudio() {
       if (audio.ctx) return audio.ctx;
@@ -13441,6 +14303,15 @@ fn fxaa(uv : vec2f) -> vec3f {
       audio.ctx = new AC();
       audio.master = audio.ctx.createGain();
       audio.master.gain.value = audio.soundOn ? 1 : 0;
+      audio.musicBus = audio.ctx.createGain();
+      audio.ambBus = audio.ctx.createGain();
+      audio.sfxBus = audio.ctx.createGain();
+      audio.musicBus.gain.value = 1;
+      audio.ambBus.gain.value = 1;
+      audio.sfxBus.gain.value = 1;
+      audio.musicBus.connect(audio.master);
+      audio.ambBus.connect(audio.master);
+      audio.sfxBus.connect(audio.master);
       audio.master.connect(audio.ctx.destination);
       return audio.ctx;
     }
@@ -13452,7 +14323,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       return audio.ctx.decodeAudioData(buf.slice(0));
     }
 
-    function startLoop(buffer, volume, loop) {
+    function startLoop(buffer, volume, loop, bus) {
       if (!audio.ctx || !buffer) return null;
       const src = audio.ctx.createBufferSource();
       const gain = audio.ctx.createGain();
@@ -13460,9 +14331,62 @@ fn fxaa(uv : vec2f) -> vec3f {
       src.buffer = buffer;
       src.loop = !!loop;
       src.connect(gain);
-      gain.connect(audio.master);
+      gain.connect(bus || audio.master);
       try { src.start(0); } catch (_) {}
       return { src, gain };
+    }
+
+    function playBufOneShot(buf, opts) {
+      if (!audio.soundOn || !audio.ctx || !buf) return;
+      const o = opts || {};
+      const src = audio.ctx.createBufferSource();
+      const gain = audio.ctx.createGain();
+      src.buffer = buf;
+      try { src.playbackRate.value = o.rate == null ? 1 : o.rate; } catch (_) {}
+      try { if (o.detune != null) src.detune.value = o.detune; } catch (_) {}
+      const t0 = audio.ctx.currentTime;
+      const vol = Math.max(0.001, o.vol == null ? 0.5 : o.vol);
+      gain.gain.setValueAtTime(vol, t0);
+      if (o.fade > 0) gain.gain.exponentialRampToValueAtTime(0.001, t0 + o.fade);
+      src.connect(gain);
+      gain.connect(o.bus || audio.sfxBus || audio.master);
+      const offset = o.offset || 0;
+      const dur = o.dur;
+      try {
+        if (dur != null) src.start(0, offset, dur);
+        else if (offset) src.start(0, offset);
+        else src.start(0);
+      } catch (_) {}
+    }
+
+    /** Tiny procedural songbird chirp when sample pack fails. */
+    function playProcChirp(vol) {
+      if (!audio.soundOn || !audio.ctx) return;
+      try {
+        const t0 = audio.ctx.currentTime;
+        const base = 1800 + Math.random() * 1400;
+        for (let i = 0; i < 2 + (Math.random() * 2) | 0; i++) {
+          const osc = audio.ctx.createOscillator();
+          const g = audio.ctx.createGain();
+          const f = audio.ctx.createBiquadFilter();
+          osc.type = "sine";
+          const st = t0 + i * (0.07 + Math.random() * 0.05);
+          osc.frequency.setValueAtTime(base * (0.92 + Math.random() * 0.2), st);
+          osc.frequency.exponentialRampToValueAtTime(base * (1.15 + Math.random() * 0.35), st + 0.05);
+          osc.frequency.exponentialRampToValueAtTime(base * 0.75, st + 0.12);
+          f.type = "bandpass";
+          f.frequency.value = base;
+          f.Q.value = 4;
+          g.gain.setValueAtTime(0.0001, st);
+          g.gain.exponentialRampToValueAtTime((vol || 0.12) * (0.7 + Math.random() * 0.5), st + 0.012);
+          g.gain.exponentialRampToValueAtTime(0.0001, st + 0.13);
+          osc.connect(f);
+          f.connect(g);
+          g.connect(audio.ambBus || audio.master);
+          osc.start(st);
+          osc.stop(st + 0.16);
+        }
+      } catch (_) {}
     }
 
     async function unlockAudio() {
@@ -13473,6 +14397,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (!audio.ctx) return;
         if (audio.ctx.state === "suspended") await audio.ctx.resume();
         if (!audio.loading) {
+          const opt = (url) => loadAudioBuffer(url).catch(() => null);
           audio.loading = Promise.all([
             loadAudioBuffer("/audio/grass_field.mp3"),
             loadAudioBuffer("/audio/noise.m4a"),
@@ -13483,11 +14408,26 @@ fn fxaa(uv : vec2f) -> vec3f {
             loadAudioBuffer("/audio/fs_grass5.mp3"),
             loadAudioBuffer("/audio/build_hammer_1.ogg").catch(() => loadAudioBuffer("/audio/build_hammer_1.mp3")),
             loadAudioBuffer("/audio/build_hammer_2.ogg").catch(() => loadAudioBuffer("/audio/build_hammer_2.mp3")),
-          ]).then(([field, noise, s1, s2, s3, s4, s5, h1, h2]) => {
-            audio.bgm = startLoop(field, 1.5, true); // FE volume 1.5
-            audio.noise = startLoop(noise, 0.1, true);
+            opt("/audio/wave01.mp3"),
+            opt("/audio/bird_chirp1.mp3"),
+            opt("/audio/bird_chirp2.mp3"),
+            opt("/audio/bird_chirp3.mp3"),
+            opt("/audio/bird_chirp4.mp3"),
+            opt("/audio/bird_chirp5.mp3"),
+            opt("/audio/splash_small1.mp3"),
+            opt("/audio/splash_small2.mp3"),
+          ]).then((bufs) => {
+            const [field, noise, s1, s2, s3, s4, s5, h1, h2, wave, b1, b2, b3, b4, b5, sp1, sp2] = bufs;
+            audio.bgm = startLoop(field, 1.15, true, audio.musicBus);
+            audio.noise = startLoop(noise, 0.08, true, audio.ambBus);
+            if (wave) {
+              audio.ocean = startLoop(wave, 0.0001, true, audio.ambBus);
+            }
             audio.steps = [s1, s2, s3, s4, s5];
             audio.hammers = [h1, h2].filter(Boolean);
+            audio.birds = [b1, b2, b3, b4, b5].filter(Boolean);
+            audio.splashes = [sp1, sp2].filter(Boolean);
+            audio.birdCd = 2 + Math.random() * 3;
           }).catch((e) => console.warn("[FW audio]", e));
         }
         await audio.loading;
@@ -13506,19 +14446,182 @@ fn fxaa(uv : vec2f) -> vec3f {
       return audio.soundOn;
     }
 
-    function playStep(volume) {
-      if (!audio.soundOn || !audio.ctx || !audio.steps.length) return;
+    function playStep(volume, surface) {
+      if (!audio.soundOn || !audio.ctx) return;
+      const surf = surface || "grass";
+      if (surf === "water") {
+        if (audio.splashes.length) {
+          const buf = audio.splashes[audio.splashIdx % audio.splashes.length];
+          audio.splashIdx++;
+          playBufOneShot(buf, {
+            vol: Math.max(0.08, Math.min(0.55, volume == null ? 0.28 : volume * 0.55)),
+            rate: 0.92 + Math.random() * 0.22,
+            detune: (Math.random() * 2 - 1) * 180,
+            offset: Math.random() * Math.max(0, buf.duration - 0.35),
+            dur: 0.28 + Math.random() * 0.12,
+            fade: 0.35,
+          });
+        } else {
+          // Procedural soft splash
+          try {
+            const t0 = audio.ctx.currentTime;
+            const nLen = Math.floor(audio.ctx.sampleRate * 0.12);
+            const nBuf = audio.ctx.createBuffer(1, nLen, audio.ctx.sampleRate);
+            const nd = nBuf.getChannelData(0);
+            for (let i = 0; i < nLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / nLen);
+            const src = audio.ctx.createBufferSource();
+            const g = audio.ctx.createGain();
+            const f = audio.ctx.createBiquadFilter();
+            src.buffer = nBuf;
+            f.type = "lowpass";
+            f.frequency.value = 900;
+            g.gain.setValueAtTime(0.22, t0);
+            g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
+            src.connect(f); f.connect(g); g.connect(audio.sfxBus);
+            src.start(t0);
+          } catch (_) {}
+        }
+        return;
+      }
+      if (!audio.steps.length) return;
       const buf = audio.steps[audio.stepIdx % audio.steps.length];
       audio.stepIdx++;
       const src = audio.ctx.createBufferSource();
       const gain = audio.ctx.createGain();
-      const detune = (Math.random() * 2 - 1) * 200; // FE detuneRange 200
+      const filt = audio.ctx.createBiquadFilter();
+      let rate = 1;
+      let detune = (Math.random() * 2 - 1) * 200;
+      let vol = Math.max(0.05, Math.min(1, volume == null ? 0.5 : volume));
+      filt.type = "lowshelf";
+      filt.frequency.value = 400;
+      filt.gain.value = 0;
+      if (surf === "sand") {
+        rate = 1.08 + Math.random() * 0.08;
+        vol *= 0.72;
+        filt.type = "highpass";
+        filt.frequency.value = 380;
+        filt.Q.value = 0.7;
+      } else if (surf === "snow") {
+        rate = 0.88 + Math.random() * 0.08;
+        vol *= 0.62;
+        detune = (Math.random() * 2 - 1) * 280;
+        filt.type = "lowpass";
+        filt.frequency.value = 1400;
+      } else if (surf === "rock") {
+        rate = 0.95;
+        vol *= 0.85;
+        filt.type = "highshelf";
+        filt.frequency.value = 1800;
+        filt.gain.value = 3;
+      }
       src.buffer = buf;
+      try { src.playbackRate.value = rate; } catch (_) {}
       try { src.detune.value = detune; } catch (_) {}
-      gain.gain.value = Math.max(0.05, Math.min(1, volume == null ? 0.55 : volume));
-      src.connect(gain);
-      gain.connect(audio.master);
+      gain.gain.value = vol;
+      src.connect(filt);
+      filt.connect(gain);
+      gain.connect(audio.sfxBus || audio.master);
       try { src.start(0); } catch (_) {}
+    }
+
+    function playBirdChirp() {
+      if (!audio.soundOn || !audio.ctx) return;
+      const vol = 0.14 + Math.random() * 0.16;
+      if (audio.birds.length) {
+        const buf = audio.birds[audio.birdIdx % audio.birds.length];
+        audio.birdIdx++;
+        // Prefer short slices from longer clips
+        const maxOff = Math.max(0, buf.duration - 1.2);
+        const offset = maxOff > 0.2 ? Math.random() * maxOff : 0;
+        const dur = Math.min(buf.duration - offset, 0.7 + Math.random() * 1.4);
+        playBufOneShot(buf, {
+          vol: vol * (0.7 + audio.birdTarget * 0.6),
+          rate: 0.94 + Math.random() * 0.14,
+          detune: (Math.random() * 2 - 1) * 160,
+          offset,
+          dur,
+          fade: Math.min(1.2, dur * 0.85),
+          bus: audio.ambBus,
+        });
+      } else {
+        playProcChirp(vol * 0.9);
+      }
+    }
+
+    function playLootBlip() {
+      unlockAudio();
+      if (!audio.soundOn || !audio.ctx) return;
+      try {
+        const t0 = audio.ctx.currentTime;
+        const osc = audio.ctx.createOscillator();
+        const g = audio.ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880 + Math.random() * 120, t0);
+        osc.frequency.exponentialRampToValueAtTime(1320, t0 + 0.06);
+        g.gain.setValueAtTime(0.07, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.1);
+        osc.connect(g);
+        g.connect(audio.sfxBus || audio.master);
+        osc.start(t0);
+        osc.stop(t0 + 0.12);
+      } catch (_) {}
+    }
+
+    /** Distance-based ocean + daytime birds + BGM ducking. */
+    function updateAmbience(dt) {
+      if (!audio.soundOn || !audio.ctx || !audio.unlocked) return;
+      const edge = typeof islandEdge === "function" ? islandEdge(player.x, player.z) : 0;
+      const bid = typeof biomeAtJs === "function" ? biomeAtJs(player.x, player.z) : 0;
+      const tod = (_celestial && _celestial.tod != null) ? _celestial.tod : 0.4;
+      const day = smooth01(0.18, 0.4, tod) * (1 - smooth01(0.58, 0.82, tod));
+      const dusk = Math.max(
+        smooth01(0.12, 0.28, tod) * (1 - smooth01(0.28, 0.42, tod)),
+        smooth01(0.58, 0.72, tod) * (1 - smooth01(0.72, 0.88, tod))
+      );
+      // Hear surf from inland fringe; full at shoreline / in water
+      let oceanAmt = smooth01(0.08, 0.48, edge);
+      if (player.swimming) oceanAmt = Math.max(oceanAmt, 0.72);
+      if (edge > 0.55) oceanAmt = Math.max(oceanAmt, 0.9);
+      audio.oceanTarget += (oceanAmt - audio.oceanTarget) * Math.min(1, dt * 1.8);
+
+      // Birds: meadow/forest/marsh daytime; quiet at sea & night
+      const birdBiome = (bid === 0 || bid === 2 || bid === 4) ? 1 : (bid === 1 ? 0.45 : 0.15);
+      let birdAmt = day * 0.85 + dusk * 0.35;
+      birdAmt *= birdBiome;
+      birdAmt *= (1 - audio.oceanTarget * 0.85);
+      if (bid === 3) birdAmt *= 0.15; // snow almost silent
+      audio.birdTarget += (birdAmt - audio.birdTarget) * Math.min(1, dt * 1.2);
+
+      const t0 = audio.ctx.currentTime;
+      if (audio.ocean && audio.ocean.gain) {
+        const ov = 0.0001 + audio.oceanTarget * 0.78;
+        audio.ocean.gain.gain.setTargetAtTime(ov, t0, 0.35);
+      }
+      if (audio.bgm && audio.bgm.gain) {
+        // Duck meadow BGM near the shore so waves read clearly
+        const bv = 1.15 * (1 - audio.oceanTarget * 0.62) * (0.75 + day * 0.35);
+        audio.bgm.gain.gain.setTargetAtTime(Math.max(0.12, bv), t0, 0.45);
+      }
+      if (audio.noise && audio.noise.gain) {
+        const nv = 0.05 + audio.oceanTarget * 0.04 + (1 - day) * 0.03;
+        audio.noise.gain.gain.setTargetAtTime(nv, t0, 0.5);
+      }
+
+      // Enter/exit water splash
+      if (player.swimming && !audio.lastSwim) {
+        playStep(0.55, "water");
+      }
+      audio.lastSwim = !!player.swimming;
+
+      audio.birdCd -= dt;
+      if (audio.birdCd <= 0 && audio.birdTarget > 0.12) {
+        if (Math.random() < audio.birdTarget) playBirdChirp();
+        // Sparse inland chorus; denser in forest
+        const gap = bid === 2
+          ? (1.2 + Math.random() * 2.8)
+          : (2.2 + Math.random() * 5.5);
+        audio.birdCd = gap / Math.max(0.35, audio.birdTarget + 0.2);
+      }
     }
 
     /** Rust-like wood nail hammer (CC0 BigSoundBank) — short hit slice + procedural fallback. */
@@ -13538,7 +14641,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         gain.gain.setValueAtTime(vol, t0);
         gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.45);
         src.connect(gain);
-        gain.connect(audio.master);
+        gain.connect(audio.sfxBus || audio.master);
         // Pick a random nail hit inside the longer recording
         const maxOff = Math.max(0, buf.duration - 0.5);
         const offset = Math.random() * maxOff;
@@ -13556,7 +14659,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         thumpG.gain.setValueAtTime(vol * 0.55, t0);
         thumpG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
         thump.connect(thumpG);
-        thumpG.connect(audio.master);
+        thumpG.connect(audio.sfxBus || audio.master);
         thump.start(t0);
         thump.stop(t0 + 0.18);
         const click = audio.ctx.createOscillator();
@@ -13566,7 +14669,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         clickG.gain.setValueAtTime(vol * 0.12, t0);
         clickG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.04);
         click.connect(clickG);
-        clickG.connect(audio.master);
+        clickG.connect(audio.sfxBus || audio.master);
         click.start(t0);
         click.stop(t0 + 0.05);
       } catch (_) {}
@@ -13589,7 +14692,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           bodyG.gain.setValueAtTime(0.55, t0);
           bodyG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
           body.connect(bodyG);
-          bodyG.connect(audio.master);
+          bodyG.connect(audio.sfxBus || audio.master);
           body.start(t0);
           body.stop(t0 + 0.2);
           const crack = audio.ctx.createOscillator();
@@ -13600,7 +14703,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           crackG.gain.setValueAtTime(0.22, t0);
           crackG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.08);
           crack.connect(crackG);
-          crackG.connect(audio.master);
+          crackG.connect(audio.sfxBus || audio.master);
           crack.start(t0);
           crack.stop(t0 + 0.09);
           // Noise burst (bark splinter)
@@ -13618,7 +14721,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           nG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.07);
           nSrc.connect(nF);
           nF.connect(nG);
-          nG.connect(audio.master);
+          nG.connect(audio.sfxBus || audio.master);
           nSrc.start(t0);
           return;
         }
@@ -13632,7 +14735,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           pingG.gain.setValueAtTime(0.16, t0);
           pingG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.1);
           ping.connect(pingG);
-          pingG.connect(audio.master);
+          pingG.connect(audio.sfxBus || audio.master);
           ping.start(t0);
           ping.stop(t0 + 0.11);
           const thud = audio.ctx.createOscillator();
@@ -13643,7 +14746,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           thudG.gain.setValueAtTime(0.48, t0);
           thudG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
           thud.connect(thudG);
-          thudG.connect(audio.master);
+          thudG.connect(audio.sfxBus || audio.master);
           thud.start(t0);
           thud.stop(t0 + 0.15);
           const nLen = Math.floor(audio.ctx.sampleRate * 0.05);
@@ -13660,7 +14763,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           nG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.06);
           nSrc.connect(nF);
           nF.connect(nG);
-          nG.connect(audio.master);
+          nG.connect(audio.sfxBus || audio.master);
           nSrc.start(t0);
           return;
         }
@@ -13673,7 +14776,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         thudG.gain.setValueAtTime(0.4, t0);
         thudG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
         thud.connect(thudG);
-        thudG.connect(audio.master);
+        thudG.connect(audio.sfxBus || audio.master);
         thud.start(t0);
         thud.stop(t0 + 0.16);
       } catch (_) {}
@@ -13681,36 +14784,63 @@ fn fxaa(uv : vec2f) -> vec3f {
 
     let gatherHitKick = 0;
 
-    /** Brief crosshair flash + camera punch when tool connects mid-anim. */
+    /** Brief crosshair flash + camera punch + chop chip burst when tool connects. */
     function pulseGatherHit(mode) {
-      gatherHitKick = 0.055;
+      gatherHitKick = mode === "chop" ? 0.085 : 0.055;
       try {
         const ch = document.querySelector(".fw-crosshair");
-        if (!ch) return;
-        ch.classList.remove("is-hit-chop", "is-hit-mine", "is-hit-gather");
-        void ch.offsetWidth;
-        const cls = mode === "chop" ? "is-hit-chop"
-          : (mode === "mine" ? "is-hit-mine" : "is-hit-gather");
-        ch.classList.add(cls);
-        clearTimeout(pulseGatherHit._t);
-        pulseGatherHit._t = setTimeout(() => {
-          try { ch.classList.remove("is-hit-chop", "is-hit-mine", "is-hit-gather"); } catch (_) {}
-        }, 160);
+        if (ch) {
+          ch.classList.remove("is-hit-chop", "is-hit-mine", "is-hit-gather");
+          void ch.offsetWidth;
+          const cls = mode === "chop" ? "is-hit-chop"
+            : (mode === "mine" ? "is-hit-mine" : "is-hit-gather");
+          ch.classList.add(cls);
+          clearTimeout(pulseGatherHit._t);
+          pulseGatherHit._t = setTimeout(() => {
+            try { ch.classList.remove("is-hit-chop", "is-hit-mine", "is-hit-gather"); } catch (_) {}
+          }, 180);
+        }
       } catch (_) {}
     }
 
+    function spawnChopChips(n) {
+      if (!n) return;
+      try {
+        const y = (n.y || 0) + 1.15;
+        spawnBlastFx(n.x, y, n.z, 0.65);
+        spawnBlastFx(n.x + 0.15, y + 0.35, n.z - 0.1, 0.4);
+      } catch (_) {}
+    }
+
+    function footSurface() {
+      const edge = typeof islandEdge === "function" ? islandEdge(player.x, player.z) : 0;
+      if (player.swimming || edge > 0.52) return "water";
+      if (edge > 0.18) return "sand";
+      const bid = typeof biomeAtJs === "function" ? biomeAtJs(player.x, player.z) : 0;
+      if (bid === 3) return "snow";
+      if (bid === 5) return "sand";
+      return "grass";
+    }
+
     function updateFootsteps(dt) {
-      if (!player.moving || !audio.soundOn) {
+      if ((!player.moving && !player.swimming) || !audio.soundOn) {
         audio.stepCd = Math.min(audio.stepCd, 0.08);
         return;
       }
+      // Soft paddle cadence while swimming even if keys idle briefly
+      if (!player.moving && player.swimming) return;
       audio.stepCd -= dt;
       if (audio.stepCd <= 0) {
-        playStep(0.45 + Math.random() * 0.25);
-        // Fortnite-ish cadence: walk ~3 Hz, sprint ~5 Hz
-        audio.stepCd = player.sprinting
-          ? (camMode === "fpv" ? 0.18 : 0.2)
-          : (camMode === "fpv" ? 0.28 : 0.34);
+        const surf = footSurface();
+        const base = surf === "water" ? 0.32 : 0.42;
+        playStep(base + Math.random() * 0.22, surf);
+        if (surf === "water") {
+          audio.stepCd = player.sprinting ? 0.34 : 0.48;
+        } else {
+          audio.stepCd = player.sprinting
+            ? (camMode === "fpv" ? 0.18 : 0.2)
+            : (camMode === "fpv" ? 0.28 : 0.34);
+        }
       }
     }
 
@@ -13755,8 +14885,11 @@ fn fxaa(uv : vec2f) -> vec3f {
         e.preventDefault();
       }
       if (e.code === "ControlLeft" || e.code === "ControlRight" || e.key === "Control") {
-        // Ctrl is NOT crouch in browser (Ctrl+W closes the tab). Use C / X instead.
-        if (down) e.preventDefault();
+        // Ctrl = crouch hold (chrome shortcuts blocked while playing — see blockBrowserChrome)
+        if (down) {
+          player.crouchToggle = false;
+          e.preventDefault();
+        }
       }
     }
 
@@ -13786,12 +14919,16 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (!down && (e.code === "Escape")) setChatOpen(false);
         return;
       }
-      // Rust: G = map (also M alias)
+      // Rust: G = map · M = map only if hammer upgrade menu is closed
       if (down && !e.repeat && (e.code === "KeyG" || e.code === "KeyM")) {
-        if (!controlsEnabled && !mapOpen) return;
-        e.preventDefault();
-        toggleMap();
-        return;
+        if (e.code === "KeyM" && upgradeMenuOpen) {
+          // fall through to hammer menu hotkeys below
+        } else {
+          if (!controlsEnabled && !mapOpen) return;
+          e.preventDefault();
+          toggleMap();
+          return;
+        }
       }
       if (down && e.code === "Escape") {
         e.preventDefault();
@@ -13821,6 +14958,11 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (e.code === "KeyR") {
           e.preventDefault();
           runUpgradeMenuAct("repair");
+          return;
+        }
+        if (e.code === "KeyY") {
+          e.preventDefault();
+          runUpgradeMenuAct("flip");
           return;
         }
         if (e.code === "KeyC") {
@@ -13885,23 +15027,22 @@ fn fxaa(uv : vec2f) -> vec3f {
         onHud({ status: flashlightOn ? "Linterna ON" : "Linterna OFF" });
         return;
       }
-      // V = camera cycle (was C — C is crouch so Ctrl+W never kills the tab)
+      // C = cámara 1ª / 3ª / órbita (binding clásico)
+      if (down && !e.repeat && e.code === "KeyC") {
+        e.preventDefault();
+        // Upgrade menu already handled KeyC as close above
+        const order = ["fpv", "follow", "orbit"];
+        const idx = Math.max(0, order.indexOf(camMode));
+        setCameraMode(order[(idx + 1) % 3]);
+        return;
+      }
+      // V = mismo ciclo de cámara (alias)
       if (down && !e.repeat && e.code === "KeyV") {
         e.preventDefault();
         const order = ["fpv", "follow", "orbit"];
         const idx = Math.max(0, order.indexOf(camMode));
         setCameraMode(order[(idx + 1) % 3]);
         return;
-      }
-      // C = crouch hold (browser-safe; Ctrl+W closes tabs)
-      if (e.code === "KeyC") {
-        if (down) {
-          player.crouchToggle = false;
-          if (!e.repeat) onHud({ status: "Agachado (C)" });
-        } else if (!player.crouchToggle) {
-          onHud({ status: "De pie" });
-        }
-        e.preventDefault();
       }
       // X = crouch toggle · in build mode = demolish
       if (down && !e.repeat && e.code === "KeyX") {
@@ -13992,11 +15133,6 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (e.code === "KeyP") {
           if (window.__fwBuildAAA) window.__fwBuildAAA.setBuildTool("place");
         }
-        if (e.code === "KeyY") {
-          const ray = camBuildRay();
-          const hit = ray && rayHitBuilds(ray.o, ray.d);
-          if (hit && typeof flipWallSoftSide === "function") flipWallSoftSide(hit.piece);
-        }
         if (e.code === "BracketLeft") {
           buildTypeIdx = (buildTypeIdx + BUILD_CATALOG.length - 1) % BUILD_CATALOG.length;
           selectRadialIdx(buildTypeIdx, true);
@@ -14004,6 +15140,20 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (e.code === "BracketRight") {
           buildTypeIdx = (buildTypeIdx + 1) % BUILD_CATALOG.length;
           selectRadialIdx(buildTypeIdx, true);
+        }
+      }
+      // Y: flip soft/hard with hammer or build mode (hint says Y)
+      if (down && !e.repeat && e.code === "KeyY" && !upgradeMenuOpen) {
+        if (heldIsHammer() || buildMode) {
+          e.preventDefault();
+          const ray = camBuildRay();
+          const hit = ray && rayHitBuilds(ray.o, ray.d);
+          if (hit && isWallType(hit.piece.type) && typeof flipWallSoftSide === "function") {
+            flipWallSoftSide(hit.piece);
+          } else {
+            onHud({ status: "Y · mira una pared para voltear soft/hard" });
+          }
+          return;
         }
       }
       if (down) unlockAudio();
@@ -14298,7 +15448,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       player.freeLook = !!(keys.AltLeft || keys.AltRight);
       // Crouch: C hold or X toggle — never Ctrl (Ctrl+W closes the browser tab)
-      player.crouching = !!keys.KeyC || !!player.crouchToggle;
+      player.crouching = !!(keys.ControlLeft || keys.ControlRight) || !!player.crouchToggle;
       let mx = 0, mz = 0;
       // Rust WASD — same in FPV / follow / orbit (V cycles camera)
       // W forward · S back · A left · D right · diagonals OK · crouch walks too
@@ -14405,7 +15555,7 @@ fn fxaa(uv : vec2f) -> vec3f {
 
         if (inWater) {
           if (keys.Space) player.vy = Math.min(3.2, player.vy + 14 * dt);
-          if (keys.KeyC || player.crouchToggle) player.vy = Math.max(-3.2, player.vy - 14 * dt);
+          if (keys.ControlLeft || keys.ControlRight || player.crouchToggle) player.vy = Math.max(-3.2, player.vy - 14 * dt);
           player.vy *= Math.pow(0.25, dt);
           player.feetY += player.vy * dt;
           const minY = groundY;
@@ -14427,7 +15577,8 @@ fn fxaa(uv : vec2f) -> vec3f {
           if (keys.Space && onGround) {
             if (player.crouching) {
               player.crouchToggle = false;
-              keys.KeyC = false;
+              keys.ControlLeft = false;
+              keys.ControlRight = false;
               player.crouching = false;
             }
             player.vy = 6.4;
@@ -14446,7 +15597,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         }
       }
       // Re-resolve crouch after jump may have cleared C
-      player.crouching = !!keys.KeyC || !!player.crouchToggle;
+      player.crouching = !!(keys.ControlLeft || keys.ControlRight) || !!player.crouchToggle;
       // Eye height: FPV + 3rd person (C cycles cams) — lower when crouched
       const eyeH = player.crouching ? 1.05 : 1.55;
       player.y = player.feetY + eyeH;
@@ -14539,6 +15690,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         }
       }
       updateFootsteps(dt);
+      updateAmbience(dt);
       if (gatherHitKick > 0) {
         gatherHitKick = Math.max(0, gatherHitKick - dt * 0.42);
       }
@@ -14702,6 +15854,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const view = mat4LookAt(eye, target, [0, 1, 0]);
       lastEye = eye;
       lastTarget = target;
+      // Halton jitter off — without motion vectors it ghosts and edges flash blue/white
       return {
         mvp: mat4Mul(proj, view),
         view, proj, target,
@@ -14819,6 +15972,14 @@ fn fxaa(uv : vec2f) -> vec3f {
         // Match meadow near so avatar depth-comp doesn't fight grass
         near: camMode === "fpv" ? 0.02 : NEAR,
         far: FAR,
+        // Drive VRM lights from meadow TOD / sun
+        tod: _celestial.tod,
+        sunTo: _celestial.sunTo,
+        lightCol: _celestial.lightCol || null,
+        amb: _celestial.amb != null ? _celestial.amb : 0.2,
+        dayW: _celestial.dayW,
+        nightW: _celestial.nightW,
+        duskW: _celestial.duskW,
       };
     }
 
@@ -14892,7 +16053,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const sunCol = [1.0, 0.96, 0.88];
       const duskCol = [1.0, 0.52, 0.22];
       const moonCol = [0.45, 0.55, 0.85];
-      const sunI = 1.55 * dayW + 0.85 * duskW * (1 - dayW * 0.5);
+      const sunI = 1.78 * dayW + 0.92 * duskW * (1 - dayW * 0.5);
       const moonI = 0.42 * nightW;
       let lightCol = [
         sunCol[0] * sunI * dayW + duskCol[0] * sunI * duskW * (1 - dayW) + moonCol[0] * moonI,
@@ -14905,7 +16066,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         Math.max(lightCol[1], 0.09 + nightW * 0.14),
         Math.max(lightCol[2], 0.14 + nightW * 0.2),
       ];
-      const amb = 0.22 * dayW + 0.16 * duskW + 0.10 * nightW + 0.08;
+      const amb = 0.16 * dayW + 0.14 * duskW + 0.10 * nightW + 0.07;
 
       const ubo = new Float32Array(56);
       ubo.set(mvp, 0);
@@ -14913,7 +16074,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       ubo[16] = -lightTo[0]; ubo[17] = -lightTo[1]; ubo[18] = -lightTo[2];
       ubo[19] = now * 0.001;
       ubo[20] = eye[0]; ubo[21] = eye[1]; ubo[22] = eye[2];
-      ubo[23] = player.sprinting ? 0.78 : (player.moving ? 0.68 : 0.58);
+      ubo[23] = player.sprinting ? 0.92 : (player.moving ? 0.82 : 0.72);
       ubo[24] = player.x; ubo[25] = player.feetY; ubo[26] = player.z; ubo[27] = 1.0;
       for (let i = 0; i < 4; i++) {
         const tr = trailPts[i];
@@ -14925,9 +16086,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       ubo[48] = -moonTo[0]; ubo[49] = -moonTo[1]; ubo[50] = -moonTo[2];
       ubo[51] = amb;
       device.queue.writeBuffer(frameBuf, 0, ubo);
-      // stash for sky pass
-
-      _celestial = { tod, sunTo, moonTo, dayW, nightW, duskW };
+      // stash for sky pass + VRM light sync
+      _celestial = { tod, sunTo, moonTo, dayW, nightW, duskW, lightCol, amb };
 
       // Cascaded shadow maps — 3 ortho frusta along view
       const aspect = size.w / Math.max(1, size.h);
@@ -14942,7 +16102,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       shadowU.set(c2, 32);
       shadowU[48] = split0; shadowU[49] = split1; shadowU[50] = split2; shadowU[51] = 0;
       const sunH = Math.max(0, lightTo[1]);
-      const shStr = Math.min(1, sunH * 2.0) * (0.28 + 0.5 * dayW + 0.38 * nightW);
+      const shStr = Math.min(1, sunH * 2.0) * (0.36 + 0.58 * dayW + 0.4 * nightW);
       shadowU[52] = 0.0018; // bias
       shadowU[53] = shStr;  // strength
       shadowU[54] = 0; shadowU[55] = 0;
@@ -14954,24 +16114,28 @@ fn fxaa(uv : vec2f) -> vec3f {
       const focalLen = camMode === "fpv" ? 14 : camMode === "orbit" ? 40 : 22;
       const underAmt = Math.max(0, Math.min(1, (SEA_Y + 0.12 - eye[1]) / 2.2));
       const exposure = 0.58 * (0.5 + 0.3 * _celestial.dayW + 0.22 * _celestial.duskW + 0.2 * _celestial.nightW);
-      const bokeh = 0.0; // DoF off — sharp everywhere
+      const bokeh = camMode === "fpv" ? 0.08 : 0.22; // subtle DoF
       const postU = new Float32Array([
         focusDist, focalLen, bokeh,
         exposure,
         camMode === "fpv" ? 1 : 0,
         NEAR, FAR, underAmt,
+        taaReady ? 0.55 : 0.0, 0, 0, 0,
       ]);
       device.queue.writeBuffer(postParamBuf, 0, postU);
 
       // Upload VRM atlas before encoding passes that sample it
+      // Skip while gate/paused — avoids avatar silhouette bleeding under boot UI
       try {
-        const src = getAvatarAtlas && getAvatarAtlas();
-        if (src && src.canvas && src.width === size.w && src.height === size.h) {
-          device.queue.copyExternalImageToTexture(
-            { source: src.canvas, flipY: false },
-            { texture: avatarAtlas },
-            [size.w, size.h * 2]
-          );
+        if (controlsEnabled && !paused) {
+          const src = getAvatarAtlas && getAvatarAtlas();
+          if (src && src.canvas && src.width === size.w && src.height === size.h) {
+            device.queue.copyExternalImageToTexture(
+              { source: src.canvas, flipY: false },
+              { texture: avatarAtlas },
+              [size.w, size.h * 2]
+            );
+          }
         }
       } catch (_) {}
 
@@ -15038,6 +16202,7 @@ fn fxaa(uv : vec2f) -> vec3f {
             sp.setIndexBuffer(terrainIbo, "uint32");
             sp.drawIndexed(terrainIndexCount);
           }
+          // Grass CSM casting disabled — flooded near cascades (black+blue look, ~16 FPS)
           if (treeVbo && treeDrawRanges.length > 0) {
             sp.setPipeline(shadowTreePipe);
             sp.setVertexBuffer(0, treeVbo);
@@ -15194,9 +16359,15 @@ fn fxaa(uv : vec2f) -> vec3f {
         pass.setVertexBuffer(0, roseVbo);
         pass.draw(roseVertCount);
       }
+      if (birdVbo && birdVertCount) {
+        pass.setPipeline(birdPipe);
+        pass.setBindGroup(0, frameBind);
+        pass.setVertexBuffer(0, birdVbo);
+        pass.draw(birdVertCount);
+      }
       pass.end();
 
-      // Bloom — 1 blur pair (was 3) for far-field perf
+      // Bloom — 2 blur pairs for richer glow without FE milk haze
       {
         const p = encoder.beginRenderPass({
           colorAttachments: [{ view: bloomAView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
@@ -15206,7 +16377,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         p.draw(3);
         p.end();
       }
-      {
+      for (let blurPass = 0; blurPass < 2; blurPass++) {
         let p = encoder.beginRenderPass({
           colorAttachments: [{ view: bloomBView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
         });
@@ -15222,8 +16393,17 @@ fn fxaa(uv : vec2f) -> vec3f {
         p.draw(3);
         p.end();
       }
-      // Skip heavy DoF soft pass — composite uses scene as soft fallback via bloomA bind slot C
-      // Composite: sharp + light bloom + FXAA
+      // Subtle DoF soft buffer (CoC in alpha)
+      {
+        const p = encoder.beginRenderPass({
+          colorAttachments: [{ view: dofView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
+        });
+        p.setPipeline(dofPipe);
+        p.setBindGroup(0, postBind(sceneView, sceneView));
+        p.draw(3);
+        p.end();
+      }
+      // Composite: sharp + soft DoF + bloom + FXAA (TAA disabled — caused red/black ghosts)
       {
         const p = encoder.beginRenderPass({
           colorAttachments: [{
@@ -15233,8 +16413,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           }],
         });
         p.setPipeline(compPipe);
-        // Soft slot = sharp scene (coc~0 effectively when soft≈sharp)
-        p.setBindGroup(0, postBind(sceneView, bloomAView, sceneView));
+        p.setBindGroup(0, postBind(sceneView, bloomAView, dofView));
         p.draw(3);
         p.end();
       }
@@ -15273,6 +16452,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       try { mapDlg.remove(); } catch (_) {}
       try { audio.bgm && audio.bgm.src.stop(); } catch (_) {}
       try { audio.noise && audio.noise.src.stop(); } catch (_) {}
+      try { audio.ocean && audio.ocean.src.stop(); } catch (_) {}
       try { audio.ctx && audio.ctx.close(); } catch (_) {}
       try { depth && depth.destroy(); } catch (_) {}
       try { sceneColor && sceneColor.destroy(); } catch (_) {}
@@ -15280,12 +16460,16 @@ fn fxaa(uv : vec2f) -> vec3f {
       try { bloomB && bloomB.destroy(); } catch (_) {}
       try { dofTex && dofTex.destroy(); } catch (_) {}
       try { compTex && compTex.destroy(); } catch (_) {}
+      try { taaTex && taaTex.destroy(); } catch (_) {}
+      try { historyTex && historyTex.destroy(); } catch (_) {}
       try { avatarAtlas && avatarAtlas.destroy(); } catch (_) {}
       try { envTex && envTex.destroy(); } catch (_) {}
       try { shadowMap && shadowMap.destroy(); } catch (_) {}
       try { shadowDummy && shadowDummy.destroy(); } catch (_) {}
       try { buildVbo && buildVbo.destroy(); } catch (_) {}
       try { ghostVbo && ghostVbo.destroy(); } catch (_) {}
+      try { birdVbo && birdVbo.destroy(); } catch (_) {}
+      try { roseVbo && roseVbo.destroy(); } catch (_) {}
       try {
         const a = document.getElementById("fw-build-radial");
         if (a) a.remove();

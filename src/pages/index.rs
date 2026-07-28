@@ -110,7 +110,7 @@ pub fn page(_req: FlowRequest) -> View {
                 try {
                     if (vrmApi && typeof vrmApi.setPlayable === "function") vrmApi.setPlayable(true);
                 } catch (_) {}
-                state.status.set("Click captura mira · WASD · Space salto · C agachar · X toggle · Shift correr · V cámara · G mapa");
+                state.status.set("Click captura mira · WASD · Space salto · C cámara · X agachar · Ctrl agachar · Shift correr · V cámara · G mapa");
                 try { canvas.focus(); } catch (_) {}
                 try {
                   if (canvas.requestPointerLock) canvas.requestPointerLock();
@@ -199,7 +199,7 @@ pub fn page(_req: FlowRequest) -> View {
                 const p = Math.max(0, Math.min(99, Math.round(pct)));
                 if (fill) fill.style.width = p + "%";
                 if (fill && fill.parentElement) fill.parentElement.style.opacity = readyToStart ? "0" : "1";
-                const text = label || ((phase === "cal" ? "CALIBRATING" : "LOADING") + "… " + p + "%");
+                const text = label || ((phase === "cal" ? "Calibrando" : "Cargando") + "… " + p + "%");
                 if (statusEl && !readyToStart && !gateHasError) statusEl.textContent = text;
             }
 
@@ -210,7 +210,7 @@ pub fn page(_req: FlowRequest) -> View {
                 if (startBtn) {
                     startBtn.classList.add("is-ready");
                     startBtn.removeAttribute("aria-disabled");
-                    startBtn.textContent = "[ START ]";
+                    startBtn.textContent = "Entrar";
                 }
                 const actions = document.querySelector(".load-actions");
                 if (actions) actions.classList.add("is-ready");
@@ -235,7 +235,7 @@ pub fn page(_req: FlowRequest) -> View {
                 state.gate_error.set(msg);
                 state.status.set(msg);
                 if (statusEl) {
-                    statusEl.textContent = "SYSTEM INCOMPATIBLE";
+                    statusEl.textContent = "Sistema incompatible";
                     statusEl.classList.add("is-error");
                     statusEl.style.opacity = "1";
                 }
@@ -243,7 +243,7 @@ pub fn page(_req: FlowRequest) -> View {
                 if (startBtn) {
                     startBtn.classList.add("is-error");
                     startBtn.setAttribute("aria-disabled", "true");
-                    startBtn.textContent = "[ ERROR ]";
+                    startBtn.textContent = "Error";
                 }
                 const errEl = document.querySelector(".load-err");
                 if (errEl) errEl.textContent = msg;
@@ -312,7 +312,7 @@ pub fn page(_req: FlowRequest) -> View {
                     // Starter wood/stone already in backpack JSON; keep hotbar for tools only
                 }
 
-                setPct(5, "LOADING… avatar", "load");
+                setPct(5, "Cargando… avatar", "load");
                 for (let i = 0; i < 100 && !window.FalseWorldVrm; i++) {
                     await sleep(40);
                 }
@@ -331,32 +331,32 @@ pub fn page(_req: FlowRequest) -> View {
                                 const s = String(m || "");
                                 const mPct = s.match(/(\d+)%/);
                                 if (mPct) {
-                                    setPct(5 + Number(mPct[1]) * 0.35, "LOADING… " + s, "load");
+                                    setPct(5 + Number(mPct[1]) * 0.35, "Cargando… " + s, "load");
                                 } else {
-                                    setPct(40, "LOADING… " + s, "load");
+                                    setPct(40, "Cargando… " + s, "load");
                                 }
                             },
                         });
                         window.__fw = window.__fw || {};
                         window.__fw.vrm = vrmApi;
-                        setPct(42, "LOADING… avatar ok", "load");
+                        setPct(42, "Cargando… avatar ok", "load");
                     } catch (ve) {
                         console.warn("[VRM]", ve);
                         vrmApi = null;
-                        setPct(42, "LOADING… sin avatar", "load");
+                        setPct(42, "Cargando… sin avatar", "load");
                     }
                 } else {
-                    setPct(42, "LOADING… sin avatar", "load");
+                    setPct(42, "Cargando… sin avatar", "load");
                 }
 
-                setPct(45, "LOADING… WebGPU", "load");
+                setPct(45, "Cargando… WebGPU", "load");
                 if (!navigator.gpu) {
-                    markError("WEBGPU NOT SUPPORTED");
+                    markError("WebGPU no soportado");
                     return () => { alive = false; };
                 }
                 const adapter = await navigator.gpu.requestAdapter();
                 if (!adapter) {
-                    markError("NO GPU ADAPTER FOUND");
+                    markError("Sin adaptador GPU");
                     return () => { alive = false; };
                 }
 
@@ -364,7 +364,7 @@ pub fn page(_req: FlowRequest) -> View {
                     await sleep(40);
                 }
                 if (!window.FalseWorldGpu) {
-                    markError("CLIENT SCRIPT MISSING");
+                    markError("Script cliente ausente");
                     state.status.set("Hard-refresh Ctrl+Shift+R");
                     return () => { alive = false; };
                 }
@@ -391,16 +391,16 @@ pub fn page(_req: FlowRequest) -> View {
                 }
                 if (invApi) notifyHeld(invApi.getActive());
 
-                setPct(55, "LOADING… meadow", "load");
+                setPct(55, "Cargando… prado", "load");
                 await api.boot();
                 if (typeof api.calibrate === "function") await api.calibrate(3);
-                setPct(99, "CALIBRATING…", "cal");
+                setPct(99, "Calibrando…", "cal");
                 armStart();
 
             } catch (e) {
                 console.error("[FW init]", e);
                 const detail = (e && e.message) ? e.message : String(e);
-                markError(detail || "INIT FAILED");
+                markError(detail || "Fallo al iniciar");
             }
 
             window.__fw.setCam = (m) => {
@@ -511,23 +511,30 @@ pub fn page(_req: FlowRequest) -> View {
                 </div>
             </div>
 
-            <div id="fw-load-gate" class="load-gate" role="dialog" aria-label="False World loading">
+            <div id="fw-load-gate" class="load-gate" role="dialog" aria-label="False World">
+                <div class="load-visual" aria-hidden="true">
+                    <img
+                        class="load-visual-img"
+                        src="/boot-meadow.png"
+                        width="1440"
+                        height="900"
+                        alt=""
+                        fetchpriority="high"
+                        decoding="async"
+                    />
+                    <div class="load-visual-mist"></div>
+                    <div class="load-visual-vignette"></div>
+                </div>
                 <div class="load-inner">
-                    <div class="load-copy">
-                        <div class="load-brand">"FALSE WORLD"</div>
-                        <div class="load-intro">
-                            <p>
-                                "Tras derivar más allá del borde del espacio, el viaje vuelve a tocar suelo. "
-                                "Una superficie se extiende en todas direcciones, sin límite visible."
-                            </p>
-                            <p>
-                                "Con cada paso, algo desciende y altera la superficie, dejando rastros. "
-                                "La deriva no termina aquí; continúa de otra forma."
-                            </p>
-                        </div>
-                    </div>
+                    <h1 class="load-brand">
+                        <span class="load-brand-false">"FALSE"</span>
+                        <span class="load-brand-world">"WORLD"</span>
+                    </h1>
+                    <p class="load-tagline">
+                        "Tras la deriva, una isla sin borde. Cada paso deja rastro."
+                    </p>
                     <div class="load-actions">
-                        <div id="fw-load-status" class="load-status" aria-live="polite">"LOADING… 0%"</div>
+                        <div id="fw-load-status" class="load-status" aria-live="polite">"Preparando mundo…"</div>
                         <div class="load-bar" aria-hidden="true">
                             <div id="fw-load-fill" class="load-bar-fill"></div>
                         </div>
@@ -536,31 +543,29 @@ pub fn page(_req: FlowRequest) -> View {
                             id="fw-start-hit"
                             class="load-start"
                             aria-disabled="true"
-                        >"[ ··· ]"</button>
-                        <div class="load-hints">
-                            <span><kbd>"W"</kbd><kbd>"A"</kbd><kbd>"S"</kbd><kbd>"D"</kbd>" MOVE"</span>
-                            <span><kbd>"Space"</kbd>" SALTO"</span>
-                            <span><kbd>"C"</kbd>" AGACHAR"</span>
-                            <span><kbd>"X"</kbd>" CROUCH TOGGLE"</span>
-                            <span><kbd>"V"</kbd>" CÁMARA"</span>
-                            <span><kbd>"Shift"</kbd>" CORRER"</span>
-                            <span><kbd>"MMB"</kbd>" RUEDA"</span>
-                            <span><kbd>"RMB"</kbd>" ÓRBITA"</span>
-                            <span><kbd>"1"</kbd>"–"<kbd>"6"</kbd>" HOTBAR"</span>
-                            <span><kbd>"Tab"</kbd>" MOCHILA"</span>
-                            <span><kbd>"Q"</kbd>" CRAFT"</span>
-                            <span><kbd>"G"</kbd>" MAPA"</span>
-                            <span><kbd>"E"</kbd>" USAR"</span>
-                            <span><kbd>"Y"</kbd>" SOFT/HARD"</span>
-                            <span><kbd>"R"</kbd>" GIRA / MEJORA"</span>
-                            <span><kbd>"T"</kbd>" CHAT"</span>
-                            <span><kbd>"F"</kbd>" LUZ"</span>
-                            <span>"TIP: airlock = 2 puertas · soft side hacia dentro"</span>
-                        </div>
-                        <p class="load-meta">{inv_meta}</p>
+                        >"Cargando"</button>
                         <p class="load-err">{gate_error}</p>
                     </div>
                 </div>
+                <footer class="load-foot">
+                    <details class="load-controls">
+                        <summary>"Controles"</summary>
+                        <div class="load-hints">
+                            <span><kbd>"W"</kbd><kbd>"A"</kbd><kbd>"S"</kbd><kbd>"D"</kbd>" mover"</span>
+                            <span><kbd>"Space"</kbd>" salto"</span>
+                            <span><kbd>"Shift"</kbd>" correr"</span>
+                            <span><kbd>"C"</kbd>" / "<kbd>"V"</kbd>" cámara"</span>
+                            <span><kbd>"X"</kbd>" / "<kbd>"Ctrl"</kbd>" agachar"</span>
+                            <span><kbd>"Tab"</kbd>" mochila"</span>
+                            <span><kbd>"Q"</kbd>" craft"</span>
+                            <span><kbd>"E"</kbd>" usar"</span>
+                            <span><kbd>"G"</kbd>" mapa"</span>
+                            <span><kbd>"1"</kbd>"–"<kbd>"6"</kbd>" hotbar"</span>
+                        </div>
+                        <p class="load-tip">"Tip: airlock = 2 puertas · soft side hacia dentro"</p>
+                    </details>
+                    <p class="load-meta">{inv_meta}</p>
+                </footer>
             </div>
         </div>
     }

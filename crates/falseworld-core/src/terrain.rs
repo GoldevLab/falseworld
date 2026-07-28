@@ -128,19 +128,20 @@ pub fn terrain_height(x: f32, z: f32, p: &TerrainParams) -> f32 {
         }
     }
     if edge > 0.0 {
-        // Organic beach: flatten to a sand berm, then gentle slope into the sea
+        // Organic beach: long flat sand berm, then soft shelf into the sea
         // (no cliff wall). Must stay in sync with WGSL/JS island_edge.
         let wobble = fbm(x * 0.018, z * 0.018, p.seed.wrapping_add(901), 3) * 0.1;
         let e = (edge + wobble).clamp(0.0, 1.0);
         let dune = fbm(x * 0.04, z * 0.04, p.seed.wrapping_add(911), 2);
-        let berm = 0.28 + dune.abs() * 0.35; // dry sand height ~0.3–0.6 m
-        let to_sand = (e / 0.42).clamp(0.0, 1.0);
+        // Berm sits just above SEA_Y (-0.55) so the sand strip is readable
+        let berm = 0.18 + dune.abs() * 0.28; // dry sand ~0.18–0.46 m
+        let to_sand = (e / 0.50).clamp(0.0, 1.0);
         let ts = to_sand * to_sand * (3.0 - 2.0 * to_sand);
-        h = h * (1.0 - ts * 0.92) + berm * ts;
-        // Into water after the berm — soft shelf, not a drop
-        let into = ((e - 0.38) / 0.62).clamp(0.0, 1.0);
+        h = h * (1.0 - ts * 0.94) + berm * ts;
+        // Dive after the wet sand / waterline (~0.45), not mid-berm
+        let into = ((e - 0.48) / 0.52).clamp(0.0, 1.0);
         let tw = into * into * (3.0 - 2.0 * into);
-        h = h * (1.0 - tw * 0.9) - tw * 4.8;
+        h = h * (1.0 - tw * 0.82) - tw * 3.4;
     }
     h
 }

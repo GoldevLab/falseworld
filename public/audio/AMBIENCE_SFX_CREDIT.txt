@@ -1,0 +1,7 @@
+wave01.mp3 — False Earth / existing meadow pack (ocean waves)
+bird_chirp1–4.mp3 — Mixkit free sound effects (Mixkit License)
+  https://mixkit.co/free-sound-effects/bird/
+splash_small1.mp3 / splash_small2.mp3 — BigSoundBank (Joseph SARDIN), CC0
+  Splash Small https://bigsoundbank.com/splash-small-s1529.html
+  Splash small https://bigsoundbank.com/splash-small-s1534.html
+build_hammer_* — see BUILD_SFX_CREDIT.txt

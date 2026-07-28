@@ -166,31 +166,62 @@ function meshHammer() {
 }
 
 function meshPlan() {
+  // Rust-style build plan: tan blueprint sheet + bold grid + glowing structure (reads at 64px)
   const g = new THREE.Group();
-  const plate = new THREE.Group();
-  plate.rotation.x = -0.55;
-  plate.rotation.y = 0.35;
-  const board = new THREE.Mesh(
-    new THREE.BoxGeometry(1.15, 0.06, 1.35),
-    mat(0x2a6fb3, { roughness: 0.45, metalness: 0.15, emissive: 0x0a2040, emissiveIntensity: 0.25 })
-  );
-  plate.add(board);
-  const lineMat = mat(0xd7e9ff, { roughness: 0.4, metalness: 0.2, emissive: 0x88b8ff, emissiveIntensity: 0.35 });
+  const paper = mat(0xe8d0a0, { roughness: 0.72, flat: true });
+  const paperEdge = mat(0xc9a86a, { roughness: 0.78, flat: true });
+  const ink = mat(0x2a4a6a, { roughness: 0.5, flat: true });
+  const inkLite = mat(0x3a6a8a, { roughness: 0.45, flat: true, emissive: 0x1a3050, emissiveIntensity: 0.2 });
+  const ghost = mat(0x5ee8ff, {
+    roughness: 0.25, flat: true, emissive: 0x22a8cc, emissiveIntensity: 0.85,
+  });
+  const clip = mat(0x6a6a72, { roughness: 0.35, metalness: 0.85, flat: true });
+
+  // Main sheet — large, tilted toward camera
+  const sheet = new THREE.Group();
+  sheet.rotation.set(-0.42, 0.18, 0.06);
+  const board = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.06, 1.15), paper);
+  sheet.add(board);
+  const border = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.05, 1.22), paperEdge);
+  border.position.y = -0.04;
+  sheet.add(border);
+
+  // Bold grid (fewer, thicker lines)
   for (let i = -2; i <= 2; i++) {
-    const hx = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.02, 0.025), lineMat);
-    hx.position.set(0, 0.045, i * 0.24);
-    const hz = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.02, 1.25), lineMat);
-    hz.position.set(i * 0.2, 0.045, 0);
-    plate.add(hx, hz);
+    const hx = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.03, 0.04), i === 0 ? ink : inkLite);
+    hx.position.set(0, 0.05, i * 0.22);
+    const hz = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 1.02), i === 0 ? ink : inkLite);
+    hz.position.set(i * 0.24, 0.05, 0);
+    sheet.add(hx, hz);
   }
-  g.add(plate);
-  const ghost = new THREE.Mesh(
-    new THREE.BoxGeometry(0.45, 0.12, 0.45),
-    mat(0x9ad0ff, { roughness: 0.3, metalness: 0.1, emissive: 0x3a80c0, emissiveIntensity: 0.4 })
-  );
-  ghost.position.set(0.15, 0.35, -0.1);
-  ghost.rotation.y = 0.35;
-  g.add(ghost);
+
+  // Chunky hologram base + walls (clear build silhouette)
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.1, 0.55), ghost);
+  floor.position.set(0, 0.12, 0.02);
+  const wallN = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.38, 0.08), ghost);
+  wallN.position.set(0, 0.3, -0.22);
+  const wallE = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.38, 0.42), ghost);
+  wallE.position.set(0.22, 0.3, 0.02);
+  const doorGhost = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.06), mat(0xffffff, {
+    roughness: 0.2, flat: true, emissive: 0x88eeff, emissiveIntensity: 0.95,
+  }));
+  doorGhost.position.set(-0.08, 0.24, -0.2);
+  sheet.add(floor, wallN, wallE, doorGhost);
+
+  // Metal clip at top
+  const clipBar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.14), clip);
+  clipBar.position.set(0, 0.08, -0.48);
+  sheet.add(clipBar);
+
+  // Rolled corner (single readable curl)
+  const curl = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.1, 12, 1, false, 0, Math.PI * 0.55), paperEdge);
+  curl.rotation.set(0, 0, Math.PI * 0.5);
+  curl.position.set(0.62, 0.02, 0.38);
+  sheet.add(curl);
+
+  g.add(sheet);
+  g.rotation.set(0.08, -0.12, 0);
+  g.scale.setScalar(0.95);
   return g;
 }
 
@@ -238,33 +269,119 @@ function meshHq() {
 }
 
 function meshLock() {
+  // Chunky padlock facing camera — gold body + silver shackle + big keyhole
   const g = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(0.7, 0.55, 0.28),
-    mat(0xc9a227, { roughness: 0.35, metalness: 0.85 })
-  );
-  const shackle = new THREE.Mesh(
-    new THREE.TorusGeometry(0.28, 0.07, 8, 16, Math.PI),
-    mat(0xd4d8de, { roughness: 0.25, metalness: 0.95 })
-  );
-  shackle.rotation.x = Math.PI * 0.5;
-  shackle.position.y = 0.35;
-  g.add(body, shackle);
+  const gold = mat(0xf0c040, { roughness: 0.28, metalness: 0.9, flat: true });
+  const goldDark = mat(0xb88820, { roughness: 0.35, metalness: 0.85, flat: true });
+  const silver = mat(0xe8eef4, { roughness: 0.18, metalness: 0.98, flat: true });
+  const hole = mat(0x181a1e, { roughness: 0.95, flat: true });
+
+  const bodyW = 0.88;
+  const bodyH = 0.72;
+  const bodyD = 0.38;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(bodyW, bodyH, bodyD), gold);
+  body.position.y = -0.12;
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(bodyW + 0.06, bodyH + 0.06, 0.08), goldDark);
+  bezel.position.set(0, -0.12, bodyD * 0.5 + 0.02);
+
+  // Thick U-shackle (opens upward, high contrast vs body)
+  const shackleR = 0.34;
+  const tube = 0.13;
+  const arc = new THREE.Mesh(new THREE.TorusGeometry(shackleR, tube, 10, 22, Math.PI), silver);
+  arc.rotation.z = Math.PI;
+  arc.position.y = 0.42;
+  const legL = new THREE.Mesh(new THREE.CylinderGeometry(tube, tube, 0.42, 10), silver);
+  legL.position.set(-shackleR, 0.2, 0);
+  const legR = legL.clone();
+  legR.position.x = shackleR;
+
+  // Keyhole — large, on front face
+  const keyTop = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.06, 14), hole);
+  keyTop.rotation.x = Math.PI * 0.5;
+  keyTop.position.set(0, -0.02, bodyD * 0.5 + 0.05);
+  const keyBot = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.06), hole);
+  keyBot.position.set(0, -0.18, bodyD * 0.5 + 0.05);
+
+  // Side chamfer hints
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.06, bodyH * 0.9, bodyD), goldDark);
+  sideL.position.set(-bodyW * 0.5 - 0.01, -0.12, 0);
+  const sideR = sideL.clone();
+  sideR.position.x = bodyW * 0.5 + 0.01;
+
+  g.add(body, bezel, arc, legL, legR, keyTop, keyBot, sideL, sideR);
+  g.rotation.set(0.05, 0.12, 0);
+  g.scale.setScalar(1.12);
   return g;
 }
 
 function meshTcItem() {
+  // Tool cupboard: wood cabinet + door frame + lock plate + tools peeking
   const g = new THREE.Group();
-  const box = new THREE.Mesh(
-    new THREE.BoxGeometry(0.95, 1.15, 0.7),
-    mat(0x5a4030, { roughness: 0.75 })
+  const wood = mat(0x6b4a2e, { roughness: 0.78, flat: true });
+  const woodDark = mat(0x3e2a1a, { roughness: 0.82, flat: true });
+  const woodLite = mat(0x8a6240, { roughness: 0.72, flat: true });
+  const metal = mat(0x8a929a, { roughness: 0.3, metalness: 0.9 });
+  const metalDark = mat(0x4a5058, { roughness: 0.35, metalness: 0.88 });
+  const steel = mat(0xc8d0d8, { roughness: 0.25, metalness: 0.95 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.2, 0.72), wood);
+  // Top lid overhang
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.1, 0.82), woodLite);
+  lid.position.y = 0.62;
+  // Base plinth
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.1, 0.78), woodDark);
+  base.position.y = -0.6;
+
+  // Door recess + panel
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.85, 0.05), woodDark);
+  recess.position.set(0, 0.02, 0.36);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.76, 0.06), wood);
+  door.position.set(0, 0.02, 0.4);
+  // Door frame rails
+  const frameT = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.06, 0.08), woodLite);
+  frameT.position.set(0, 0.42, 0.4);
+  const frameB = frameT.clone();
+  frameB.position.y = -0.38;
+  const frameL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.86, 0.08), woodLite);
+  frameL.position.set(-0.33, 0.02, 0.4);
+  const frameR = frameL.clone();
+  frameR.position.x = 0.33;
+
+  // Lock plate + handle
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.28, 0.04), metal);
+  plate.position.set(0.18, 0.02, 0.45);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 10), steel);
+  knob.position.set(0.18, 0.02, 0.5);
+
+  // Privilege / auth lamp (green)
+  const lamp = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 10, 10),
+    mat(0x4ecf6a, { roughness: 0.35, metalness: 0.2, emissive: 0x1a8838, emissiveIntensity: 0.7 })
   );
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(0.55, 0.7, 0.06),
-    mat(0x3a2a1e, { roughness: 0.7 })
+  lamp.position.set(-0.28, 0.48, 0.42);
+
+  // Tools peeking out the top (axe head + hammer)
+  const axeHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.55, 6), woodDark);
+  axeHandle.position.set(-0.18, 0.85, 0.05);
+  axeHandle.rotation.z = 0.25;
+  const axeHead = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 0.12), metalDark);
+  axeHead.position.set(-0.08, 1.08, 0.05);
+  axeHead.rotation.z = 0.25;
+  const hamHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.45, 6), woodDark);
+  hamHandle.position.set(0.22, 0.82, -0.08);
+  hamHandle.rotation.z = -0.35;
+  const hamHead = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.12, 0.12), metal);
+  hamHead.position.set(0.32, 1.0, -0.08);
+  hamHead.rotation.z = -0.35;
+
+  g.add(
+    body, lid, base, recess, door,
+    frameT, frameB, frameL, frameR,
+    plate, knob, lamp,
+    axeHandle, axeHead, hamHandle, hamHead
   );
-  door.position.set(0, 0.05, 0.38);
-  g.add(box, door);
+  g.rotation.set(0.2, 0.55, 0.05);
+  g.scale.setScalar(0.88);
   return g;
 }
 
@@ -383,7 +500,7 @@ function meshC4() {
 }
 
 function meshWorkbench(tier) {
-  const t = tier | 1;
+  const t = (tier | 0) >= 1 ? (tier | 0) : 1;
   const g = new THREE.Group();
   const wood = mat(0x6b4e2e, { roughness: 0.82 });
   const top = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 0.75), wood);
@@ -841,6 +958,12 @@ function fitCameraToObject(camera, object, offset = 1.55) {
   camera.updateProjectionMatrix();
 }
 
+/** Tighter framing for small-slot readability */
+const ICON_ZOOM = {
+  build_plan: 1.28,
+  key_lock: 1.32,
+};
+
 function bakeAll() {
   if (typeof document === "undefined") return Promise.resolve(cache);
 
@@ -878,7 +1001,7 @@ function bakeAll() {
     try {
       const mesh = buildMesh(id);
       scene.add(mesh);
-      fitCameraToObject(camera, mesh, BUILD_IDS.includes(id) ? 1.7 : 1.55);
+      fitCameraToObject(camera, mesh, ICON_ZOOM[id] || (BUILD_IDS.includes(id) ? 1.7 : 1.55));
       renderer.render(scene, camera);
       cache[id] = canvas.toDataURL("image/png");
       scene.remove(mesh);
