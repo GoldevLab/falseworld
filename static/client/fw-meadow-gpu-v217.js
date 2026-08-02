@@ -1,4 +1,4 @@
-/** False World meadow WebGPU v217 — door open walkable + shared-edge wall clear. */
+/** False World meadow WebGPU v220 — lobed canopy + solid falling trunks/stumps. */
 /**
  * Inspiration: False Earth (Ming-Jyun Hung). Original WGSL + JS; no Three/R3F/React.
  */
@@ -21,6 +21,8 @@ struct Frame {
   tod : f32,
   moon_dir : vec3f,
   amb : f32,
+  fall_hinge : vec4f, // xyz + stump height
+  fall_tip : vec4f,   // direction xz + angle + active radius²
 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var env_samp : sampler;
@@ -447,24 +449,58 @@ fn biome_ground_soft(xz : vec2f) -> vec3f {
   let contact_ao = mix(0.54, 1.0, clamp(n.y * 0.65 + 0.18, 0.0, 1.0));
   col *= contact_ao * mix(0.92, 1.05, n_fine);
   let edge = island_edge_w(xz);
-  let sand_n = biome_fbm(xz * 0.08) * 0.5 + 0.5;
-  // Wide beach: warm dry berm → darker wet → thin foam at waterline (~0.45)
-  let dry_sand = vec3f(0.84, 0.74, 0.50) * (0.88 + sand_n * 0.16);
-  let wet_sand = vec3f(0.40, 0.34, 0.26);
-  let foam_sand = vec3f(0.90, 0.92, 0.94);
-  let dry_w = smoothstep(0.0, 0.12, edge) * (1.0 - smoothstep(0.40, 0.56, edge));
-  let wet_w = smoothstep(0.16, 0.38, edge) * (1.0 - smoothstep(0.52, 0.74, edge));
-  let foam_w = smoothstep(0.38, 0.48, edge) * (1.0 - smoothstep(0.56, 0.74, edge));
-  col = mix(col, dry_sand, dry_w * 0.995);
+  // --- Beach sand: multi-scale grain + ripples (not flat yellow paint) ---
+  let beach_amt = smoothstep(0.0, 0.08, edge);
+  let sg0 = biome_fbm(xz * 0.18) * 0.5 + 0.5;
+  let sg1 = biome_fbm(xz * 0.85 + vec2f(2.4, -1.6)) * 0.5 + 0.5;
+  let sg2 = biome_fbm(xz * 3.2 + vec2f(-2.8, 4.1)) * 0.5 + 0.5;
+  let sg3 = biome_fbm(xz * 11.0 + vec2f(6.2, -3.5)) * 0.5 + 0.5;
+  let sg4 = biome_fbm(xz * 36.0 + vec2f(-4.7, 8.3)) * 0.5 + 0.5;
+  let cang = atan2(xz.y, xz.x);
+  let across = xz.x * cos(cang) + xz.y * sin(cang);
+  let along = -xz.x * sin(cang) + xz.y * cos(cang);
+  let ripple = sin(across * 2.8 + sg1 * 2.2) * 0.5 + 0.5;
+  let ripple2 = sin(across * 7.5 - along * 0.35 + sg2 * 2.8) * 0.5 + 0.5;
+  // Beach micro-normals: grain + ripple crests
+  if (beach_amt > 0.02) {
+    let bn0 = biome_fbm(xz * 9.0 + vec2f(1.1, -2.4)) * 2.0 - 1.0;
+    let bn1 = biome_fbm(xz * 24.0 + vec2f(-3.3, 5.1)) * 2.0 - 1.0;
+    let br = cos(across * 2.8 + sg1 * 2.2);
+    n = normalize(n
+      + vec3f(bn0, 0.0, bn1) * (0.55 * beach_amt)
+      + vec3f(br * cos(cang), 0.0, br * sin(cang)) * (0.22 * beach_amt)
+      + vec3f(bn1 * 0.4, abs(bn0) * 0.06, -bn0 * 0.35) * (0.18 * beach_amt));
+  }
+  // Warm quartz sand — beige / ochre / pale (no green channel bias)
+  var dry_sand = mix(vec3f(0.76, 0.68, 0.48), vec3f(0.88, 0.80, 0.58), sg0);
+  dry_sand = mix(dry_sand, vec3f(0.70, 0.60, 0.42), sg1 * 0.42);
+  dry_sand = mix(dry_sand, vec3f(0.84, 0.78, 0.62), sg2 * 0.38);
+  dry_sand = mix(dry_sand, vec3f(0.58, 0.52, 0.40), smoothstep(0.72, 0.94, sg3) * 0.45);
+  dry_sand = mix(dry_sand, vec3f(0.92, 0.88, 0.74), smoothstep(0.86, 0.98, sg4) * 0.4);
+  dry_sand = mix(dry_sand, dry_sand * vec3f(1.06, 1.01, 0.92), ripple * 0.22);
+  dry_sand = mix(dry_sand, dry_sand * vec3f(0.93, 0.91, 0.86), ripple2 * 0.14);
+  let shell = smoothstep(0.90, 0.97, biome_fbm(xz * 5.8 + vec2f(sg2, -sg0)));
+  dry_sand = mix(dry_sand, vec3f(0.90, 0.86, 0.78), shell * 0.6);
+  let dark_peb = smoothstep(0.925, 0.985, biome_fbm(xz * 7.6 + vec2f(-5.2, 3.1)));
+  dry_sand = mix(dry_sand, vec3f(0.32, 0.30, 0.26), dark_peb * 0.7);
+  var wet_sand = mix(vec3f(0.36, 0.30, 0.22), vec3f(0.26, 0.22, 0.18), sg1);
+  wet_sand = mix(wet_sand, vec3f(0.42, 0.36, 0.28), sg3 * 0.35);
+  wet_sand = mix(wet_sand, wet_sand * 0.88, ripple * 0.2);
+  let foam_sand = mix(vec3f(0.86, 0.88, 0.90), vec3f(0.94, 0.95, 0.96), sg4);
+  // Wider dry berm so meadow green can't bleed onto the beach
+  let dry_w = smoothstep(0.0, 0.08, edge) * (1.0 - smoothstep(0.36, 0.52, edge));
+  let wet_w = smoothstep(0.12, 0.34, edge) * (1.0 - smoothstep(0.48, 0.70, edge));
+  let foam_w = smoothstep(0.34, 0.44, edge) * (1.0 - smoothstep(0.52, 0.70, edge));
+  col = mix(col, dry_sand, dry_w);
   col = mix(col, wet_sand, wet_w * 0.98);
-  col = mix(col, foam_sand, foam_w * 0.75);
+  col = mix(col, foam_sand, foam_w * 0.72);
   // Marsh inland puddles / wet mud (after edge is known)
   if (bw.marsh > 0.2 && edge < 0.1) {
     let puddle = smoothstep(0.55, 0.92, biome_fbm(xz * 0.55 + vec2f(n_macro, -n_meso)));
     col = mix(col, vec3f(0.045, 0.065, 0.04), bw.marsh * puddle * 0.85);
   }
-  // Pebbles / grit — kill meadow grit on the beach so lime green doesn't bleed
-  let beach_mask = 1.0 - smoothstep(0.0, 0.2, edge);
+  // Inland pebbles / grit only — never on the sandy berm
+  let beach_mask = 1.0 - smoothstep(0.0, 0.14, edge);
   let pebble = smoothstep(0.80, 0.96, biome_fbm(xz * 3.5 + vec2f(n_meso, -n_macro)));
   let grit = smoothstep(0.68, 0.9, biome_fbm(xz * 10.5 + vec2f(1.4, -2.6)));
   col = mix(col, vec3f(0.26, 0.24, 0.18), pebble * grassy * 0.48 * beach_mask);
@@ -476,17 +512,26 @@ fn biome_ground_soft(xz : vec2f) -> vec3f {
     let deep_uw = vec3f(0.07, 0.14, 0.18);
     col = mix(col, mix(sand_uw, deep_uw, uw), uw * 0.92);
   }
+  // Re-light after beach normal bumps
+  let ndl_b = max(dot(n, L), 0.0);
+  let ndv_b = max(dot(n, V), 0.0);
   let sun = frame.light_col;
   let hemi = env_irradiance(n);
   let sh = shadow_factor(input.world, n, L);
   let sh_g = mix(1.0, sh, 0.52);
-  var rgb = col * (frame.amb * 1.02 + ndl * 0.72 * sh_g) * sun + col * hemi * (0.34 + frame.amb * 0.28);
-  // Soft contact darkening under canopy density
-  rgb *= mix(0.9, 1.0, 1.0 - grassy * 0.12 * (1.0 - n.y));
+  var rgb = col * (frame.amb * 1.02 + ndl_b * 0.72 * sh_g) * sun + col * hemi * (0.34 + frame.amb * 0.28);
+  // Soft contact darkening under canopy density (inland only)
+  rgb *= mix(0.9, 1.0, 1.0 - grassy * 0.12 * (1.0 - n.y) * beach_mask);
   if (wet_w > 0.15) {
     let h = normalize(L + V);
     let ndh = max(dot(n, h), 0.0);
-    rgb += sun * pow(ndh, 72.0) * wet_w * 0.35 * sh;
+    rgb += sun * pow(ndh, 64.0) * wet_w * 0.42 * sh;
+  }
+  // Dry sand: soft quartz sparkle
+  if (dry_w > 0.2) {
+    let h = normalize(L + V);
+    let ndh = max(dot(n, h), 0.0);
+    rgb += sun * pow(ndh, 120.0) * dry_w * (0.08 + sg4 * 0.12) * sh;
   }
   if (bw.snow > 0.15 || bw.marsh > 0.3 || bid == 3u || bid == 4u) {
     let h = normalize(L + V);
@@ -496,9 +541,9 @@ fn biome_ground_soft(xz : vec2f) -> vec3f {
     let a2 = a * a;
     let d_den = ndh * ndh * (a2 - 1.0) + 1.0;
     let D = a2 / max(3.14159 * d_den * d_den, 1e-4);
-    let F = 0.05 + 0.95 * pow(1.0 - ndv, 5.0);
-    let G = G_smith(max(ndl, 0.02), max(ndv, 0.02), rough);
-    let spec = D * F * G / max(4.0 * max(ndl, 0.02) * max(ndv, 0.02), 1e-4);
+    let F = 0.05 + 0.95 * pow(1.0 - ndv_b, 5.0);
+    let G = G_smith(max(ndl_b, 0.02), max(ndv_b, 0.02), rough);
+    let spec = D * F * G / max(4.0 * max(ndl_b, 0.02) * max(ndv_b, 0.02), 1e-4);
     rgb += sun * spec * 0.22 * sh;
     rgb += env_refl(reflect(-V, n)) * F * 0.12;
   }
@@ -1501,25 +1546,28 @@ fn metal_grain(world : vec3f, nrm : vec3f, tint : vec3f) -> vec3f {
   let sh = mix(1.0, shadow_factor(input.world, nrm, L), 0.55);
   let hemi = 0.2 + 0.55 * max(nrm.y, 0.0);
   let wood = wood_grain(input.world, nrm);
+  // Wardrobe / textured props encode flag as uv.x += 10
+  let is_textured_prop = input.uv.x > 8.0;
+  let face_uv = select(input.uv, vec2f(input.uv.x - 10.0, input.uv.y), is_textured_prop);
   let chroma = max(input.col.r, max(input.col.g, input.col.b))
     - min(input.col.r, min(input.col.g, input.col.b));
   let luma = dot(input.col, vec3f(0.333));
   // TC props only — do NOT classify twig/stone tiers as props (was washing floors flat)
-  let is_brass = input.col.r > 0.58 && input.col.g > 0.4
+  let is_brass = !is_textured_prop && input.col.r > 0.58 && input.col.g > 0.4
     && input.col.b < input.col.r * 0.65 && chroma > 0.18;
-  let is_iron_prop = chroma < 0.09 && luma > 0.28 && luma < 0.55
+  let is_iron_prop = !is_textured_prop && chroma < 0.09 && luma > 0.28 && luma < 0.55
     && abs(input.col.r - input.col.b) < 0.06;
   // Structural tiers from pieceRgb
-  let is_stone_tier = chroma < 0.12 && luma > 0.45 && luma < 0.58 && !is_iron_prop;
-  let is_metal_tier = chroma < 0.14 && luma > 0.38 && luma <= 0.48 && !is_iron_prop;
-  let is_armor_tier = chroma < 0.16 && luma <= 0.38 && !is_brass;
+  let is_stone_tier = !is_textured_prop && chroma < 0.12 && luma > 0.45 && luma < 0.58 && !is_iron_prop;
+  let is_metal_tier = !is_textured_prop && chroma < 0.14 && luma > 0.38 && luma <= 0.48 && !is_iron_prop;
+  let is_armor_tier = !is_textured_prop && chroma < 0.16 && luma <= 0.38 && !is_brass;
   // Sleeping-bag / cloth props — green-teal fabric, not wood grain
-  let is_fabric = input.col.g > input.col.r + 0.04
+  let is_fabric = !is_textured_prop && input.col.g > input.col.r + 0.04
     && input.col.g > input.col.b * 0.85
     && chroma > 0.06 && luma > 0.12 && luma < 0.55
     && !is_brass && !is_iron_prop;
   // Campfire flame / ember — hot orange-yellow, self-lit
-  let is_flame = input.col.r > 0.88
+  let is_flame = !is_textured_prop && input.col.r > 0.88
     && input.col.b < 0.42
     && input.col.g > 0.08
     && chroma > 0.32
@@ -1528,7 +1576,14 @@ fn metal_grain(world : vec3f, nrm : vec3f, tint : vec3f) -> vec3f {
   var col : vec3f;
   var spec_pow = 48.0;
   var spec_amt = 0.12;
-  if (is_flame) {
+  if (is_textured_prop) {
+    // Authored GLB albedo in vertex colors (wardrobe / WB / chest) — keep map detail
+    let micro = biome_value_noise(input.world.xz * 5.5 + input.world.y * 3.2);
+    col = input.col * (0.96 + 0.06 * micro);
+    col *= 0.90 + 0.10 * max(nrm.y, 0.0);
+    spec_pow = 36.0;
+    spec_amt = 0.08;
+  } else if (is_flame) {
     // Flicker + emissive glow (no wood grain wash)
     let flick = 0.72 + 0.28 * sin(frame.time * 12.5 + input.world.x * 9.0 + input.world.z * 7.0);
     let flick2 = 0.85 + 0.15 * sin(frame.time * 19.0 + input.world.y * 14.0);
@@ -1560,8 +1615,11 @@ fn metal_grain(world : vec3f, nrm : vec3f, tint : vec3f) -> vec3f {
     col = mix(wood, input.col, 0.14);
   }
 
-  let e = min(min(input.uv.x, 1.0 - input.uv.x), min(input.uv.y, 1.0 - input.uv.y));
-  col *= 0.78 + 0.22 * smoothstep(0.0, 0.07, e);
+  let e = min(min(face_uv.x, 1.0 - face_uv.x), min(face_uv.y, 1.0 - face_uv.y));
+  // Face-edge bevel only for procedural boxes; textured props keep full albedo
+  if (!is_textured_prop) {
+    col *= 0.78 + 0.22 * smoothstep(0.0, 0.07, e);
+  }
   let H = normalize(L + normalize(frame.eye - input.world));
   let spec = pow(max(dot(nrm, H), 0.0), spec_pow) * spec_amt;
   var lit : vec3f;
@@ -1579,6 +1637,29 @@ fn metal_grain(world : vec3f, nrm : vec3f, tint : vec3f) -> vec3f {
   }
   lit = apply_fog(lit, input.world);
   return vec4f(clamp(lit, vec3f(0.0), vec3f(select(2.4, 4.5, is_flame))), 1.0);
+}
+
+@fragment fn fs_build_fx(input : BuildOut) -> @location(0) vec4f {
+  let nrm = normalize(input.nrm);
+  let L = normalize(-frame.sun_dir);
+  let ndl = max(dot(nrm, L), 0.0);
+  let is_dust = input.uv.x < -0.5;
+  // Neutral lighting preserves authored particle colors (wood/dirt/fire)
+  // instead of the blue/red placement-ghost palette.
+  let light_luma = dot(frame.light_col, vec3f(0.299, 0.587, 0.114));
+  let shade = 0.52 + ndl * 0.42 + max(nrm.y, 0.0) * 0.16;
+  var lit = input.col * shade * clamp(light_luma + frame.amb * 1.4, 0.72, 1.35);
+  lit = apply_fog(lit, input.world);
+  var alpha = clamp(length(input.col) * 1.35, 0.28, 0.9);
+  if (is_dust) {
+    let dust_uv = vec2f((input.uv.x + 2.0) * 2.0 - 1.0, input.uv.y * 2.0 - 1.0);
+    let radius = length(dust_uv);
+    let soft = 1.0 - smoothstep(0.18, 1.0, radius);
+    let breakup = 0.72 + biome_value_noise(input.world.xz * 7.0 + frame.time * 0.04) * 0.28;
+    alpha = soft * breakup * clamp(length(input.col) * 1.15, 0.18, 0.62);
+    if (alpha < 0.012) { discard; }
+  }
+  return vec4f(clamp(lit, vec3f(0.0), vec3f(2.4)), alpha);
 }
 
 @fragment fn fs_build_ghost(input : BuildOut) -> @location(0) vec4f {
@@ -1800,6 +1881,7 @@ struct TreeOut {
   @location(1) tdata : vec4f,
   @location(2) world : vec3f,
   @location(3) part_w : f32,     // part id 0..3
+  @location(4) solid_w : f32,    // 0 cards, 1 cylinder wall, 2 stump cap
 };
 
 @vertex fn vs_tree(input : TreeIn) -> TreeOut {
@@ -1808,8 +1890,9 @@ struct TreeOut {
   let scale = input.tdata.y;
   let yaw = input.tdata.z;
   let phase = input.tdata.w;
-  let part = floor(input.part_x * 0.1);
-  let cross_i = input.part_x - part * 10.0;
+  let is_cyl = input.part_x >= 99.5;
+  let part = select(floor(input.part_x * 0.1), input.part_x - 100.0, is_cyl);
+  let cross_i = select(input.part_x - part * 10.0, 0.0, is_cyl);
   let ang = yaw + cross_i * 1.04719755; // 60° crosses — enough volume, less clutter
   let ca = cos(ang);
   let sa = sin(ang);
@@ -1818,7 +1901,64 @@ struct TreeOut {
   var world = input.base;
   var uv = input.corner;
 
-  if (part < 0.5) {
+  if (is_cyl) {
+    // Solid tapered bole (part 0), stump wall (part 4), or sealed cap (part 5).
+    let t = input.corner.y;
+    var trunk_h = 3.0 * scale;
+    var half0 = 0.28;
+    var half1 = 0.12;
+    if (species > 0.5 && species < 1.5) { trunk_h = 4.6 * scale; half0 = 0.22; half1 = 0.09; }
+    else if (species > 5.5 && species < 6.5) { trunk_h = 4.9 * scale; half0 = 0.24; half1 = 0.10; }
+    else if (species > 1.5 && species < 2.5) { trunk_h = 5.1 * scale; half0 = 0.26; half1 = 0.11; }
+    else if (species > 2.5 && species < 3.5) { trunk_h = 4.8 * scale; half0 = 0.36; half1 = 0.13; }
+    else if (species > 3.5 && species < 4.5) { trunk_h = 2.35 * scale; half0 = 0.16; half1 = 0.07; }
+    else if (species > 4.5 && species < 5.5) { trunk_h = 2.7 * scale; half0 = 0.28; half1 = 0.20; }
+    else if (species > 6.5 && species < 7.5) { trunk_h = 5.2 * scale; half0 = 0.16; half1 = 0.06; }
+    else if (species > 7.5 && species < 8.5) { trunk_h = 6.0 * scale; half0 = 0.18; half1 = 0.065; }
+    else if (species > 8.5 && species < 9.5) { trunk_h = 5.0 * scale; half0 = 0.28; half1 = 0.12; }
+    else if (species > 9.5 && species < 10.5) { trunk_h = 5.4 * scale; half0 = 0.24; half1 = 0.16; }
+    else { trunk_h = 4.85 * scale; half0 = 0.38; half1 = 0.15; }
+    let stump_h = trunk_h * 0.15;
+    let theta = input.corner.x * 6.28318530718 + yaw;
+    let radial = vec2f(cos(theta), sin(theta));
+    // Slight radial irregularity removes the lathed/plastic silhouette while
+    // staying identical across stump, caps and bole at the cut.
+    let organic = 1.0
+      + sin(theta * 3.0 + phase * 6.283) * 0.038
+      + sin(theta * 7.0 - phase * 4.1) * 0.018;
+    if (part > 4.5) {
+      let cap_delta = input.base.xz - frame.fall_hinge.xz;
+      let is_active_bole_cap = part < 5.5 || (
+        frame.fall_tip.w > 0.0 && dot(cap_delta, cap_delta) <= frame.fall_tip.w
+      );
+      let cap_r = half0 * scale * 1.16 * organic * t * select(0.0, 1.0, is_active_bole_cap);
+      world = vec3f(
+        input.base.x + radial.x * cap_r,
+        input.base.y + stump_h + 0.002,
+        input.base.z + radial.y * cap_r,
+      );
+      uv = vec2f(input.corner.x, t);
+    } else if (part > 3.5) {
+      let flare = mix(1.45, 1.18, smoothstep(0.0, 1.0, t));
+      let radius = half0 * scale * flare * organic;
+      world = vec3f(
+        input.base.x + radial.x * radius,
+        input.base.y + t * stump_h,
+        input.base.z + radial.y * radius,
+      );
+      uv = vec2f(input.corner.x, t * 0.15);
+    } else {
+      let local_t = mix(0.15, 1.0, t);
+      let radius = mix(half0 * 1.18, half1, pow(t, 0.9)) * scale * organic;
+      let lean = (phase - 0.5) * 0.08 * t * (trunk_h - stump_h);
+      world = vec3f(
+        input.base.x + radial.x * radius + lean * cos(yaw),
+        input.base.y + stump_h + t * (trunk_h - stump_h),
+        input.base.z + radial.y * radius + lean * sin(yaw),
+      );
+      uv = vec2f(input.corner.x, local_t);
+    }
+  } else if (part < 0.5) {
     // TRUNK
     let t = input.corner.y;
     var trunk_h = 3.0 * scale;
@@ -1928,11 +2068,30 @@ struct TreeOut {
     uv = input.corner;
   }
 
+  // Rotate the complete bole + branches + existing canopy around the cut.
+  // Stump wall/cap are explicitly excluded, so foliage geometry is untouched.
+  let keep_stump = is_cyl && part > 3.5 && part < 5.5;
+  let fall_delta = input.base.xz - frame.fall_hinge.xz;
+  if (!keep_stump && frame.fall_tip.w > 0.0
+      && dot(fall_delta, fall_delta) <= frame.fall_tip.w) {
+    let pivot = vec3f(
+      frame.fall_hinge.x,
+      frame.fall_hinge.y + frame.fall_hinge.w,
+      frame.fall_hinge.z,
+    );
+    let axis = normalize(vec3f(frame.fall_tip.y, 0.0, -frame.fall_tip.x));
+    let rel = world - pivot;
+    let c = cos(frame.fall_tip.z);
+    let s = sin(frame.fall_tip.z);
+    world = pivot + rel * c + cross(axis, rel) * s + axis * dot(axis, rel) * (1.0 - c);
+  }
+
   o.clip = frame.view_proj * vec4f(world, 1.0);
   o.uv = uv;
   o.tdata = input.tdata;
   o.world = world;
-  o.part_w = part;
+  o.part_w = select(part, 0.0, is_cyl && part > 3.5 && part < 4.5);
+  o.solid_w = select(0.0, select(1.0, 2.0, part > 4.5), is_cyl);
   return o;
 }
 
@@ -1942,6 +2101,8 @@ struct TreeOut {
   let part = input.part_w;
   let u = input.uv.x;
   let v = input.uv.y;
+  let is_solid = input.solid_w > 0.5;
+  let is_cap = input.solid_w > 1.5;
   let nUV = vec2f(u * 3.5 + phase * 5.0, v * 4.5 + phase * 2.5);
   let n1 = biome_value_noise(nUV);
   let n2 = biome_value_noise(nUV * 2.2 + vec2f(1.1, phase));
@@ -1956,11 +2117,24 @@ struct TreeOut {
   // Interior flutter only — never shift the silhouette mask (that sparkles vs sky).
   let flutter = sin(frame.time * (1.1 + phase * 0.7) + phase * 6.28 + u * 4.0) * 0.04;
 
-  if (part < 0.5) {
+  if (is_cap) {
+    mask = 1.0;
+    let rr = clamp(v, 0.0, 1.0);
+    let ring_warp = biome_value_noise(vec2f(u * 13.0 + phase, rr * 7.0));
+    let rings = 0.5 + 0.5 * sin(rr * 58.0 + ring_warp * 7.0);
+    let cut = biome_value_noise(vec2f(u * 18.0, rr * 12.0 + phase));
+    let radial_crack = smoothstep(0.93, 0.995, abs(sin(u * 31.4159 + ring_warp * 2.4))) * smoothstep(0.35, 0.95, rr);
+    col = mix(vec3f(0.42, 0.24, 0.1), vec3f(0.74, 0.51, 0.25), rings * 0.58 + cut * 0.18);
+    col = mix(col, col * 0.36, radial_crack * 0.62);
+  } else if (part < 0.5) {
     let flare = mix(1.18, 0.94, smoothstep(0.0, 0.25, v));
     let taper = mix(0.98, 0.62, pow(v, 0.82)) * flare;
     // Soft bark edge (less cardboard cutout)
-    mask = 1.0 - smoothstep(taper - 0.02, taper + 0.09, abs(u));
+    mask = select(
+      1.0 - smoothstep(taper - 0.02, taper + 0.09, abs(u)),
+      1.0,
+      is_solid,
+    );
     let bark = biome_value_noise(vec2f(u * 14.0, v * 38.0 + phase * 7.0));
     let grain = biome_value_noise(vec2f(u * 4.2, v * 96.0));
     let plate = biome_value_noise(vec2f(u * 2.4 + phase, v * 9.0));
@@ -2008,6 +2182,14 @@ struct TreeOut {
       col *= 1.0 - hcrack * 0.28;
       // Subtle moss only — strong green was reading as neon bark
       col = mix(col, vec3f(0.14, 0.18, 0.09), moss * 0.22);
+    }
+    if (is_solid && !(species > 4.5 && species < 5.5)) {
+      // Fine longitudinal fissures and bark plates only on solid geometry.
+      let groove = 0.5 + 0.5 * sin(u * 113.097 + phase * 5.0 + bark * 4.0);
+      let micro = biome_value_noise(vec2f(u * 42.0 + phase, v * 155.0));
+      let fissure = smoothstep(0.78, 0.98, groove * 0.72 + micro * 0.42);
+      col *= 0.84 + groove * 0.18 + micro * 0.06;
+      col = mix(col, col * 0.42, fissure * 0.52);
     }
     // Root flare darker + wet base
     col *= 0.52 + 0.48 * smoothstep(0.0, 0.18, v);
@@ -2180,7 +2362,16 @@ struct TreeOut {
   }
 
   var nrm : vec3f;
-  if (part < 0.5) {
+  if (is_cap) {
+    nrm = vec3f(0.0, 1.0, 0.0);
+  } else if (is_solid) {
+    let theta = u * 6.28318530718 + input.tdata.z;
+    let radial = vec3f(cos(theta), 0.0, sin(theta));
+    let tangent = vec3f(-sin(theta), 0.0, cos(theta));
+    let ridge = sin(u * 113.097 + v * 31.0 + phase * 4.0);
+    let coarse = biome_value_noise(vec2f(u * 34.0 + phase, v * 82.0)) - 0.5;
+    nrm = normalize(radial + tangent * (ridge * 0.075 + coarse * 0.14) + vec3f(0.0, 0.055 + coarse * 0.05, 0.0));
+  } else if (part < 0.5) {
     // Cylindrical trunk normal in card space
     let ang = u * 1.35;
     nrm = normalize(vec3f(sin(ang) * 1.15, 0.08 + v * 0.18, cos(ang) * 0.95 + (1.0 - abs(u)) * 0.25));
@@ -2251,8 +2442,11 @@ struct TreeOut {
   let part = input.part_w;
   let u = input.uv.x;
   let v = input.uv.y;
+  let is_solid = input.solid_w > 0.5;
   var mask = 1.0;
-  if (part < 0.5) {
+  if (is_solid) {
+    mask = 1.0;
+  } else if (part < 0.5) {
     let flare = mix(1.15, 0.95, smoothstep(0.0, 0.22, v));
     let taper = mix(0.97, 0.65, pow(v, 0.85)) * flare;
     mask = 1.0 - smoothstep(taper, taper + 0.06, abs(u));
@@ -2521,10 +2715,10 @@ fn init_blades(@builtin(global_invocation_id) id : vec3u) {
   // Full-island carpet — only beach/coast fades (no moving circular patch)
   let iedge = island_edge_w(vec2f(wx, wz));
   // Keep beach clear of grass — wide sandy berm before waterline
-  if (iedge > 0.09 || wy < -0.12) {
+  if (iedge > 0.05 || wy < -0.12) {
     height = 0.01;
-  } else if (iedge > 0.015) {
-    height *= smoothstep(0.09, 0.015, iedge);
+  } else if (iedge > 0.008) {
+    height *= smoothstep(0.05, 0.008, iedge);
   }
   // No grass through boulders
   if (grass_on_rock(wx, wz)) {
@@ -3754,12 +3948,31 @@ fn fxaa(uv : vec2f) -> vec3f {
       },
     });
     const maxStorage = device.limits.maxStorageBufferBindingSize || wantStore;
+    const memoryGb = Number(navigator.deviceMemory || 0);
+    const coarsePointer =
+      typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+    let graphicsTier = "high";
+    if (
+      coarsePointer ||
+      (memoryGb > 0 && memoryGb <= 4) ||
+      maxStorage < 160 * 1024 * 1024
+    ) {
+      graphicsTier = "low";
+    } else if (
+      !wantF16 ||
+      (memoryGb > 0 && memoryGb <= 8) ||
+      maxStorage < 320 * 1024 * 1024
+    ) {
+      graphicsTier = "medium";
+    }
+    const bladeAxisCap =
+      graphicsTier === "high" ? 2048 : (graphicsTier === "medium" ? 1536 : 1024);
     // Pack as many blades as storage allows (full island, one bake)
-    let BLADE_AXIS = 2048;
+    let BLADE_AXIS = bladeAxisCap;
     while (BLADE_AXIS * BLADE_AXIS * 64 > maxStorage * 0.65 && BLADE_AXIS > 512) {
       BLADE_AXIS = Math.floor(BLADE_AXIS * 0.85);
     }
-    BLADE_AXIS = Math.max(512, Math.min(2048, BLADE_AXIS));
+    BLADE_AXIS = Math.max(512, Math.min(bladeAxisCap, BLADE_AXIS));
     const BLADE_COUNT = BLADE_AXIS * BLADE_AXIS;
     // Full island diameter (~512) + rim margin — fixed at origin, never streamed
     const GRASS_AREA = 540;
@@ -3769,14 +3982,20 @@ fn fxaa(uv : vec2f) -> vec3f {
     const context = canvas.getContext("webgpu");
     const format = navigator.gpu.getPreferredCanvasFormat();
     const sceneFormat = wantF16 ? "rgba16float" : "rgba8unorm";
-    const bloomScale = 0.35;
+    const bloomScale =
+      graphicsTier === "high" ? 0.35 : (graphicsTier === "medium" ? 0.28 : 0.22);
+    const BLOOM_BLUR_PASSES =
+      graphicsTier === "high" ? 2 : (graphicsTier === "medium" ? 1 : 0);
+    const GRASS_CULL_INTERVAL =
+      graphicsTier === "high" ? 1 : (graphicsTier === "medium" ? 2 : 3);
     const NEAR = 0.1, FAR = 800;
     // Quality bubble — full blade tessellation near player; cheaper geometry far away
     // (texture/sample quality unchanged — only segment count & draw density)
     const HQ_RADIUS = 62;
     const GRASS_LOD0 = 28;       // 15-seg blades (tight near field)
     const GRASS_LOD1 = HQ_RADIUS; // 5-seg within bubble
-    const GRASS_FAR = 175;       // hard cull grass beyond
+    const GRASS_FAR =
+      graphicsTier === "high" ? 175 : (graphicsTier === "medium" ? 140 : 110);
     const TREE_DRAW = 180;       // draw trees within
     const TREE_SHADOW = 65;      // cast tree shadows within
     const PROP_FAR = 100;        // rocks / flowers fade
@@ -3972,7 +4191,7 @@ fn fxaa(uv : vec2f) -> vec3f {
             // Wide sandy shoreline on the map (matches fs_terrain beach bands)
             const beach = edge > 0.0 ? Math.min(1, edge / 0.38) : 0;
             const wet = edge > 0.28 ? Math.min(1, (edge - 0.28) / 0.22) : 0;
-            const sand0 = 214, sand1 = 188, sand2 = 128;
+            const sand0 = 220, sand1 = 198, sand2 = 148;
             const wet0 = 110, wet1 = 96, wet2 = 72;
             c0 = c0 * (1 - beach) + sand0 * beach;
             c1 = c1 * (1 - beach) + sand1 * beach;
@@ -4187,6 +4406,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     let sceneView, bloomAView, bloomBView, dofView, depthView, compView, taaView, historyView, avatarAtlasView;
     let getAvatarAtlas = null;
     let taaReady = false;
+    let renderTargetEpoch = 0;
     function rebuildTargets() {
       destroyTex(depth); destroyTex(sceneColor); destroyTex(bloomA); destroyTex(bloomB);
       destroyTex(dofTex); destroyTex(compTex); destroyTex(taaTex); destroyTex(historyTex); destroyTex(avatarAtlas);
@@ -4241,6 +4461,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       taaView = taaTex.createView();
       historyView = historyTex.createView();
       avatarAtlasView = avatarAtlas.createView();
+      renderTargetEpoch++;
     }
     rebuildTargets();
 
@@ -4611,33 +4832,33 @@ fn fxaa(uv : vec2f) -> vec3f {
       depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
     });
 
-    function oceanSimBind() {
-      const foamRead = foamFlip ? foamTexB : foamTexA;
-      const foamWrite = foamFlip ? foamTexA : foamTexB;
-      return device.createBindGroup({
+    const oceanCascade0View = cascade0Tex.createView();
+    const oceanCascade1View = cascade1Tex.createView();
+    const oceanFoamViews = [foamTexA.createView(), foamTexB.createView()];
+    const oceanSimBinds = [0, 1].map((flip) =>
+      device.createBindGroup({
         layout: oceanSimBgl,
         entries: [
           { binding: 0, resource: { buffer: oceanSimParamsBuf } },
-          { binding: 1, resource: cascade0Tex.createView() },
-          { binding: 2, resource: cascade1Tex.createView() },
-          { binding: 3, resource: foamRead.createView() },
-          { binding: 4, resource: foamWrite.createView() },
+          { binding: 1, resource: oceanCascade0View },
+          { binding: 2, resource: oceanCascade1View },
+          { binding: 3, resource: oceanFoamViews[flip] },
+          { binding: 4, resource: oceanFoamViews[1 - flip] },
         ],
-      });
-    }
-    function oceanDrawBind() {
-      const foamRead = foamFlip ? foamTexB : foamTexA;
-      return device.createBindGroup({
+      })
+    );
+    const oceanDrawBinds = [0, 1].map((flip) =>
+      device.createBindGroup({
         layout: oceanDrawBgl,
         entries: [
           { binding: 0, resource: oceanSamp },
-          { binding: 1, resource: cascade0Tex.createView() },
-          { binding: 2, resource: cascade1Tex.createView() },
-          { binding: 3, resource: foamRead.createView() },
+          { binding: 1, resource: oceanCascade0View },
+          { binding: 2, resource: oceanCascade1View },
+          { binding: 3, resource: oceanFoamViews[flip] },
           { binding: 4, resource: { buffer: oceanDrawParamsBuf } },
         ],
-      });
-    }
+      })
+    );
 
     const grassPipe15 = makeGrassPipe("vs_grass15");
     const grassPipe5 = makeGrassPipe("vs_grass5");
@@ -4814,6 +5035,25 @@ fn fxaa(uv : vec2f) -> vec3f {
       },
       fragment: {
         module: sceneModule, entryPoint: "fs_build_ghost",
+        targets: [{
+          format: sceneFormat,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
+        }],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: false, depthCompare: "less" },
+    });
+    const fxPipe = device.createRenderPipeline({
+      layout: framePipeLayout,
+      vertex: {
+        module: sceneModule, entryPoint: "vs_build",
+        buffers: [buildVertBuf],
+      },
+      fragment: {
+        module: sceneModule, entryPoint: "fs_build_fx",
         targets: [{
           format: sceneFormat,
           blend: {
@@ -5102,7 +5342,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       primitive: { topology: "triangle-list" },
     });
 
-    function postBind(texA, texB, softView) {
+    function makePostBind(texA, texB, softView) {
       const soft = softView || texA;
       return device.createBindGroup({
         layout: postBgl,
@@ -5117,7 +5357,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       });
     }
 
-    function mergeBind(meadowView) {
+    function makeMergeBind(meadowView) {
       return device.createBindGroup({
         layout: mergeBgl,
         entries: [
@@ -5131,9 +5371,26 @@ fn fxaa(uv : vec2f) -> vec3f {
         ],
       });
     }
+    let cachedTargetEpoch = -1;
+    let cachedFrameBinds = null;
+    function frameBinds() {
+      if (cachedFrameBinds && cachedTargetEpoch === renderTargetEpoch) {
+        return cachedFrameBinds;
+      }
+      cachedTargetEpoch = renderTargetEpoch;
+      cachedFrameBinds = {
+        scene: makePostBind(sceneView, sceneView),
+        bloomA: makePostBind(bloomAView, bloomAView),
+        bloomB: makePostBind(bloomBView, bloomBView),
+        composite: makePostBind(sceneView, bloomAView, dofView),
+        merge: makeMergeBind(compView),
+      };
+      return cachedFrameBinds;
+    }
 
     let terrainVbo = null, terrainIbo = null, terrainIndexCount = 0;
     let chunk = null, baking = false, grassReady = false;
+    let grassCullFrame = 0;
     let beamVbo = null, beamVertCount = 0;
     let roseVbo = null, roseVertCount = 0;
     let birdVbo = null, birdVertCount = 0;
@@ -5494,30 +5751,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       return true;
     }
     function spawnRespawnBarrel(pos) {
-      if (countLiveBarrels() >= RESOURCE_SPAWN.barrelCap) return false;
-      if (player && Math.hypot(pos.x - player.x, pos.z - player.z) < RESOURCE_SPAWN.barrelClearR) {
-        return false; // area occupied — retry later
-      }
-      const ix = Math.floor(pos.x / BUILD_CELL);
-      const iz = Math.floor(pos.z / BUILD_CELL);
-      const piece = ensurePieceInternals({
-        type: "scrap_barrel",
-        ix, iy: 0, iz, yaw: 0,
-        baseY: pos.y,
-        tier: 0,
-        ownerId: "world",
-        _ox: pos.x - (ix + 0.5) * BUILD_CELL,
-        _oz: pos.z - (iz + 0.5) * BUILD_CELL,
-      });
-      buildPieces.push(piece);
-      harvestNodes.push({
-        kind: "barrel", x: pos.x, y: pos.y, z: pos.z, r: 0.5,
-        hp: 55, maxHp: 55, dropId: "scrap", dropPerHit: 3,
-        pieceId: piece.id, dead: false, respawned: true,
-      });
-      buildBlockers.push({ x: pos.x, z: pos.z, r: 0.7, kind: "rock" });
-      rebuildBuildMesh();
-      return true;
+      // World scrap chests removed — no map respawn
+      return false;
     }
     function tickResourceRespawn(_dt) {
       if (!resourceRespawnQueue.length || !chunk) return;
@@ -5534,7 +5769,10 @@ fn fxaa(uv : vec2f) -> vec3f {
         }
         let ok = false;
         if (job.kind === "tree") ok = spawnRespawnTree(pos);
-        else if (job.kind === "barrel") ok = spawnRespawnBarrel(pos);
+        else if (job.kind === "barrel") {
+          resourceRespawnQueue.splice(i, 1); // scrap chests disabled
+          continue;
+        }
         else ok = spawnRespawnOre(pos, job.oreHint);
         if (ok) {
           resourceRespawnQueue.splice(i, 1);
@@ -5638,27 +5876,28 @@ fn fxaa(uv : vec2f) -> vec3f {
     const BUILD_DOOR_H = 2.2;
     const BUILD_TRI_H = BUILD_CELL * Math.sqrt(3) * 0.5; // equilateral height ≈ 2.598 m
 
-    /** Full piece catalog — order matches Rust radial wheel (clockwise from top). */
+    /** Exact 20-piece Rust twig catalog — clockwise from top. */
     const BUILD_CATALOG = [
       { id: "foundation", label: "Cimiento", desc: "Base cuadrada 3×3 m", group: "deck", cost: 50 },
-      { id: "foundation_tri", label: "Cimiento Δ", desc: "Triángulo equilátero 3 m", group: "deck", cost: 25 },
+      { id: "roof", label: "Techo", desc: "Techo inclinado cuadrado", group: "roof", cost: 50 },
+      { id: "ramp", label: "Rampa", desc: "Conecta desniveles exteriores", group: "ramp", cost: 50 },
       { id: "stairs", label: "Escalera", desc: "Sube un nivel completo (3 m)", group: "ramp", cost: 50 },
-      { id: "stairs_l", label: "Escalera L", desc: "Escalera en ángulo", group: "ramp", cost: 50 },
-      { id: "floor", label: "Piso", desc: "Piso / techo plano 3×3 m", group: "floor", cost: 25 },
-      { id: "floor_tri", label: "Piso Δ", desc: "Piso triangular 3 m", group: "floor", cost: 13 },
-      { id: "roof", label: "Techo", desc: "Inclínado · sube 1,5 m", group: "roof", cost: 25 },
-      { id: "roof_tri", label: "Techo Δ", desc: "Techo triangular", group: "roof", cost: 13 },
-      { id: "wall", label: "Pared", desc: "Asegura tu base · 3×3 m", group: "wall", cost: 50, wallH: BUILD_LEVEL_H },
-      { id: "doorway", label: "Marco puerta", desc: "Hueco 1,2×2,2 m", group: "wall", cost: 35, wallH: BUILD_LEVEL_H },
-      { id: "window", label: "Marco ventana", desc: "Pared con ventana", group: "wall", cost: 35, wallH: BUILD_LEVEL_H },
-      { id: "doorway_d", label: "Doble puerta", desc: "Marco ancho 2,0×2,2 m", group: "wall", cost: 40, wallH: BUILD_LEVEL_H },
-      { id: "wall_half", label: "Media pared", desc: "3×1,5 m", group: "wall", cost: 25, wallH: BUILD_HALF_H },
-      { id: "wall_low", label: "Pared baja", desc: "3×0,75 m", group: "wall", cost: 15, wallH: BUILD_LOW_H },
-      { id: "roof_corner", label: "Techo esquina", desc: "Transición de techos", group: "roof", cost: 25 },
-      { id: "roof_valley", label: "Techo valle", desc: "Unión interior", group: "roof", cost: 25 },
-      { id: "ramp", label: "Rampa", desc: "Rampa · 3 m de alto", group: "ramp", cost: 50 },
-      { id: "roof_wall", label: "Hastial", desc: "Cierre lateral de techo", group: "wall", cost: 25, wallH: BUILD_ROOF_RISE },
-      { id: "door", label: "Puerta", desc: "E abre/cierra · cerradura", group: "wall", cost: 40, wallH: BUILD_LEVEL_H },
+      { id: "floor", label: "Suelo", desc: "Piso / techo plano 3×3 m", group: "floor", cost: 20 },
+      { id: "floor_tri", label: "Suelo triangular", desc: "Plataforma triangular", group: "floor", cost: 10 },
+      { id: "foundation_tri", label: "Cimiento triangular", desc: "Base triangular de tres lados", group: "deck", cost: 25 },
+      { id: "roof_tri", label: "Techo triangular", desc: "Techo para geometría triangular", group: "roof", cost: 25 },
+      { id: "roof_ridge", label: "Cumbrera", desc: "Doble inclinación para unir techos", group: "roof", cost: 25 },
+      { id: "wall", label: "Pared", desc: "Panel vertical completo 3×3 m", group: "wall", cost: 20, wallH: BUILD_LEVEL_H },
+      { id: "doorway", label: "Marco de puerta", desc: "Apertura para una puerta", group: "wall", cost: 20, wallH: BUILD_LEVEL_H },
+      { id: "window", label: "Marco de ventana", desc: "Pared con hueco de ventana", group: "wall", cost: 20, wallH: BUILD_LEVEL_H },
+      { id: "wall_frame", label: "Marco de pared", desc: "Marco completo para portones", group: "wall", cost: 20, wallH: BUILD_LEVEL_H },
+      { id: "floor_frame", label: "Marco de suelo", desc: "Suelo hueco para trampillas", group: "floor", cost: 20 },
+      { id: "wall_low", label: "Pared baja", desc: "Parapeto de ¼ de altura", group: "wall", cost: 10, wallH: BUILD_LOW_H },
+      { id: "wall_half", label: "Media pared", desc: "Pared de ½ altura", group: "wall", cost: 20, wallH: BUILD_HALF_H },
+      { id: "pillar", label: "Pilar", desc: "Columna vertical de soporte", group: "wall", cost: 10, wallH: BUILD_LEVEL_H },
+      { id: "floor_steps", label: "Escalones de suelo", desc: "Escalones para desniveles bajos", group: "ramp", cost: 10 },
+      { id: "stairs_l", label: "Escalera L", desc: "Sube girando 90 grados", group: "ramp", cost: 50 },
+      { id: "stairs_u", label: "Escalera U", desc: "Sube girando 180 grados", group: "ramp", cost: 50 },
       // TC se fabrica/coloca como ítem tool_cupboard_item (no va en la rueda del Plano)
     ];
     const BUILD_TYPES = BUILD_CATALOG.map((p) => p.id);
@@ -5669,8 +5908,13 @@ fn fxaa(uv : vec2f) -> vec3f {
       BUILD_LABELS[BUILD_CATALOG[i].id] = BUILD_CATALOG[i].label;
     }
     // Deployables — not in radial wheel
+    BUILD_BY_ID.door = {
+      id: "door", label: "Puerta", desc: "Se coloca dentro de un marco", group: "deploy", cost: 0,
+      wallH: BUILD_LEVEL_H,
+    };
+    BUILD_LABELS.door = "Puerta";
     BUILD_BY_ID.toolcupboard = {
-      id: "toolcupboard", label: "Armario", desc: "Privilege 16 m · upkeep", group: "deploy", cost: 0,
+      id: "toolcupboard", label: "Armario", desc: "Privilege 25 m · upkeep", group: "deploy", cost: 0,
     };
     BUILD_LABELS.toolcupboard = "Armario";
     BUILD_BY_ID.workbench = {
@@ -5736,12 +5980,18 @@ fn fxaa(uv : vec2f) -> vec3f {
     let activeBoxId = null;
     let softHintEl = null;
     let vitalsAcc = 0;
-    let buildTypeIdx = 8; // default Wall (Rust focus)
+    let buildTypeIdx = 9; // default Wall (Rust focus)
     let buildYaw = 0; // 0..3 * 90°
     let radialOpen = false;
     let radialHoverIdx = -1;
     /** @type {{type:string,ix:number,iy:number,iz:number,yaw:number,y:number,baseY:number}[]} */
     let buildPieces = [];
+    /** Baked wardrobe.glb verts for toolcupboard (pos/nrm/col/uv × 11 floats). */
+    let wardrobeTcMesh = null; // { floats: Float32Array|number[], vertCount, size }
+    /** Baked animated_old_chest.glb (closed pose) for boxes / legacy scrap chests. */
+    let oldChestMesh = null; // { floats, vertCount, size }
+    /** Baked workbench GLBs per tier (1–3). */
+    const workbenchMeshes = { 1: null, 2: null, 3: null };
     /** Spatial hash: "ix,iy,iz" → pieces[] — O(1) cell queries (no full-base scans). */
     const buildCellIndex = new Map();
     /** Per-piece GPU mesh cache: id → { sig, data: Float32Array } */
@@ -6133,40 +6383,50 @@ fn fxaa(uv : vec2f) -> vec3f {
       wall: [0.52, 0.36, 0.20],
       doorway: [0.50, 0.35, 0.19],
       window: [0.50, 0.35, 0.19],
+      wall_frame: [0.50, 0.35, 0.19],
+      pillar: [0.48, 0.34, 0.18],
       doorway_d: [0.50, 0.35, 0.19],
       wall_half: [0.51, 0.36, 0.20],
       wall_low: [0.49, 0.34, 0.19],
       roof_wall: [0.50, 0.35, 0.18],
       floor: [0.50, 0.35, 0.19],
       floor_tri: [0.49, 0.34, 0.18],
+      floor_frame: [0.49, 0.34, 0.18],
+      floor_steps: [0.50, 0.36, 0.20],
       stairs: [0.50, 0.36, 0.20],
       stairs_l: [0.50, 0.36, 0.20],
+      stairs_u: [0.50, 0.36, 0.20],
       ramp: [0.48, 0.34, 0.19],
       roof: [0.46, 0.32, 0.17],
       roof_tri: [0.46, 0.32, 0.17],
+      roof_ridge: [0.45, 0.31, 0.16],
       roof_corner: [0.45, 0.31, 0.16],
       roof_valley: [0.45, 0.31, 0.16],
     };
 
     function isWallType(t) {
       return t === "wall" || t === "doorway" || t === "window" || t === "doorway_d"
+        || t === "wall_frame" || t === "pillar"
         || t === "wall_half" || t === "wall_low" || t === "roof_wall" || t === "door";
     }
     function isDeckType(t) {
       return t === "foundation" || t === "foundation_tri" || t === "floor" || t === "floor_tri"
-        || t === "stairs" || t === "stairs_l" || t === "ramp";
+        || t === "floor_frame" || t === "stairs" || t === "stairs_l" || t === "stairs_u"
+        || t === "floor_steps" || t === "ramp";
     }
     function isFloorType(t) {
-      return t === "floor" || t === "floor_tri";
+      return t === "floor" || t === "floor_tri" || t === "floor_frame";
     }
     function isFoundationType(t) {
       return t === "foundation" || t === "foundation_tri";
     }
     function isRoofType(t) {
-      return t === "roof" || t === "roof_tri" || t === "roof_corner" || t === "roof_valley";
+      return t === "roof" || t === "roof_tri" || t === "roof_ridge"
+        || t === "roof_corner" || t === "roof_valley";
     }
     function isRampType(t) {
-      return t === "stairs" || t === "stairs_l" || t === "ramp";
+      return t === "stairs" || t === "stairs_l" || t === "stairs_u"
+        || t === "floor_steps" || t === "ramp";
     }
     function isFurnitureDeploy(t) {
       return t === "toolcupboard" || t === "workbench" || t === "research_table"
@@ -6209,12 +6469,13 @@ fn fxaa(uv : vec2f) -> vec3f {
     function furnitureHalfExtents(type, yaw) {
       const y = ((yaw % 4) + 4) % 4;
       let hw = 0.42, hd = 0.26; // wardrobe: wide × shallow
-      if (type === "workbench" || type === "research_table") { hw = 0.7; hd = 0.42; }
-      else if (type === "box_large") { hw = 0.55; hd = 0.45; }
-      else if (type === "box_small") { hw = 0.38; hd = 0.32; }
+      if (type === "workbench") { hw = 0.81; hd = 0.39; } // GLB T1–T3 · ×1.3 scale
+      else if (type === "research_table") { hw = 0.7; hd = 0.42; }
+      else if (type === "box_large") { hw = 0.60; hd = 0.34; } // old chest GLB
+      else if (type === "box_small") { hw = 0.43; hd = 0.24; }
       else if (type === "campfire") { hw = 0.52; hd = 0.52; }
       else if (type === "sleeping_bag") { hw = 0.38; hd = 0.95; }
-      else if (type === "toolcupboard") { hw = 0.46; hd = 0.30; } // matches crown / doors
+      else if (type === "toolcupboard") { hw = 0.42; hd = 0.24; } // wardrobe.glb footprint
       if (y === 1 || y === 3) { const t = hw; hw = hd; hd = t; }
       return { hx: hw, hz: hd };
     }
@@ -6342,6 +6603,51 @@ fn fxaa(uv : vec2f) -> vec3f {
       arr.push(x, y, z, nx, ny, nz, rgb[0], rgb[1], rgb[2], u, v);
     }
 
+    /** Emit baked old-chest GLB verts (local → world yaw). Returns true if mesh used. */
+    function emitOldChestMesh(arr, cx, cz, base, yaw, scale, rgbOverride) {
+      const mesh = oldChestMesh;
+      if (!mesh || !mesh.floats || !(mesh.vertCount > 0)) return false;
+      const s = scale != null ? scale : 1;
+      const F = mesh.floats;
+      const y4 = ((yaw % 4) + 4) % 4;
+      for (let vi = 0; vi < mesh.vertCount; vi++) {
+        const o = vi * 11;
+        const lx = F[o] * s, ly = F[o + 1] * s, lz = F[o + 2] * s;
+        const lnx = F[o + 3], lny = F[o + 4], lnz = F[o + 5];
+        let wx, wz, wnx, wnz;
+        if (y4 === 0) { wx = cx + lx; wz = cz + lz; wnx = lnx; wnz = lnz; }
+        else if (y4 === 1) { wx = cx + lz; wz = cz - lx; wnx = lnz; wnz = -lnx; }
+        else if (y4 === 2) { wx = cx - lx; wz = cz - lz; wnx = -lnx; wnz = -lnz; }
+        else { wx = cx - lz; wz = cz + lx; wnx = -lnz; wnz = lnx; }
+        const col = rgbOverride != null ? rgbOverride : [F[o + 6], F[o + 7], F[o + 8]];
+        buildPushVert(arr, wx, base + ly, wz, wnx, lny, wnz, col, F[o + 9] + 10.0, F[o + 10]);
+      }
+      return true;
+    }
+
+    /** Emit baked workbench mesh for tier (fallback false → procedural). */
+    function emitWorkbenchMesh(arr, cx, cz, base, yaw, tier, rgbOverride) {
+      const t = tier >= 3 ? 3 : (tier >= 2 ? 2 : 1);
+      const mesh = workbenchMeshes[t];
+      if (!mesh || !mesh.floats || !(mesh.vertCount > 0)) return false;
+      const s = 1.3; // +30% over baked size
+      const F = mesh.floats;
+      const y4 = ((yaw % 4) + 4) % 4;
+      for (let vi = 0; vi < mesh.vertCount; vi++) {
+        const o = vi * 11;
+        const lx = F[o] * s, ly = F[o + 1] * s, lz = F[o + 2] * s;
+        const lnx = F[o + 3], lny = F[o + 4], lnz = F[o + 5];
+        let wx, wz, wnx, wnz;
+        if (y4 === 0) { wx = cx + lx; wz = cz + lz; wnx = lnx; wnz = lnz; }
+        else if (y4 === 1) { wx = cx + lz; wz = cz - lx; wnx = lnz; wnz = -lnx; }
+        else if (y4 === 2) { wx = cx - lx; wz = cz - lz; wnx = -lnx; wnz = -lnz; }
+        else { wx = cx - lz; wz = cz + lx; wnx = -lnz; wnz = lnx; }
+        const col = rgbOverride != null ? rgbOverride : [F[o + 6], F[o + 7], F[o + 8]];
+        buildPushVert(arr, wx, base + ly, wz, wnx, lny, wnz, col, F[o + 9] + 10.0, F[o + 10]);
+      }
+      return true;
+    }
+
     function buildPushBox(arr, x0, y0, z0, x1, y1, z1, rgb) {
       const faces = [
         { n: [0, 1, 0], v: [[x0,y1,z0,0,0],[x1,y1,z0,1,0],[x1,y1,z1,1,1],[x0,y1,z1,0,1]] },
@@ -6400,6 +6706,29 @@ fn fxaa(uv : vec2f) -> vec3f {
       buildPushVert(arr, ax, ay, az, -nx, -ny, -nz, rgb, 0, 0);
       buildPushVert(arr, cx, cy, cz, -nx, -ny, -nz, rgb, 0.5, 1);
       buildPushVert(arr, bx, by, bz, -nx, -ny, -nz, rgb, 1, 0);
+    }
+
+    /** Soft FX card. Negative U marks it as radial dust in fs_build_fx. */
+    function buildPushDustQuad(arr, cx, cy, cz, size, angle, rgb) {
+      const sx = Math.cos(angle) * size;
+      const sz = Math.sin(angle) * size;
+      const nx = -Math.sin(angle);
+      const nz = Math.cos(angle);
+      const y0 = cy - size * 0.55;
+      const y1 = cy + size * 0.7;
+      const q = [
+        [cx - sx, y0, cz - sz, -2, 0],
+        [cx + sx, y0, cz + sz, -1, 0],
+        [cx + sx, y1, cz + sz, -1, 1],
+        [cx - sx, y1, cz - sz, -2, 1],
+      ];
+      const tris = [[0, 1, 2], [0, 2, 3]];
+      for (let t = 0; t < 2; t++) {
+        for (let k = 0; k < 3; k++) {
+          const p = q[tris[t][k]];
+          buildPushVert(arr, p[0], p[1], p[2], nx, 0.15, nz, rgb, p[3], p[4]);
+        }
+      }
     }
 
     function buildLogBeamX(arr, x0, x1, y0, y1, zc, halfW, rgb) {
@@ -7012,11 +7341,41 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
     }
 
+    /** Symmetric /\ roof cap: two slopes meet on the center ridge. */
+    function buildRoofRidge(arr, x0, z0, x1, z1, yBase, yaw, rgb) {
+      const rise = BUILD_ROOF_RISE;
+      const thick = BUILD_FLOOR_T * 0.9;
+      const cx = (x0 + x1) * 0.5;
+      const cz = (z0 + z1) * 0.5;
+      if (yaw === 0 || yaw === 2) {
+        // Ridge runs east/west.
+        buildPushTri(arr, x0, yBase, z0, x1, yBase, z0, x1, yBase + rise, cz, rgb);
+        buildPushTri(arr, x0, yBase, z0, x1, yBase + rise, cz, x0, yBase + rise, cz, rgb);
+        buildPushTri(arr, x0, yBase + rise, cz, x1, yBase + rise, cz, x1, yBase, z1, rgb);
+        buildPushTri(arr, x0, yBase + rise, cz, x1, yBase, z1, x0, yBase, z1, rgb);
+        buildPushTri(arr, x0, yBase - thick, z0, x1, yBase + rise - thick, cz, x1, yBase - thick, z0, rgb);
+        buildPushTri(arr, x0, yBase - thick, z0, x0, yBase + rise - thick, cz, x1, yBase + rise - thick, cz, rgb);
+        buildPushTri(arr, x0, yBase + rise - thick, cz, x1, yBase - thick, z1, x1, yBase + rise - thick, cz, rgb);
+        buildPushTri(arr, x0, yBase + rise - thick, cz, x0, yBase - thick, z1, x1, yBase - thick, z1, rgb);
+        buildPushBox(arr, x0, yBase + rise - 0.07, cz - 0.07, x1, yBase + rise + 0.07, cz + 0.07, rgb);
+      } else {
+        // Ridge runs north/south.
+        buildPushTri(arr, x0, yBase, z0, cx, yBase + rise, z0, cx, yBase + rise, z1, rgb);
+        buildPushTri(arr, x0, yBase, z0, cx, yBase + rise, z1, x0, yBase, z1, rgb);
+        buildPushTri(arr, cx, yBase + rise, z0, x1, yBase, z0, x1, yBase, z1, rgb);
+        buildPushTri(arr, cx, yBase + rise, z0, x1, yBase, z1, cx, yBase + rise, z1, rgb);
+        buildPushTri(arr, x0, yBase - thick, z0, cx, yBase + rise - thick, z1, cx, yBase + rise - thick, z0, rgb);
+        buildPushTri(arr, x0, yBase - thick, z0, x0, yBase - thick, z1, cx, yBase + rise - thick, z1, rgb);
+        buildPushTri(arr, cx, yBase + rise - thick, z0, x1, yBase - thick, z1, x1, yBase - thick, z0, rgb);
+        buildPushTri(arr, cx, yBase + rise - thick, z0, cx, yBase + rise - thick, z1, x1, yBase - thick, z1, rgb);
+        buildPushBox(arr, cx - 0.07, yBase + rise - 0.07, z0, cx + 0.07, yBase + rise + 0.07, z1, rgb);
+      }
+    }
+
     function buildStairsRun(arr, x0, z0, x1, z1, base, yaw, rgb, steps, riseTotal, inset) {
-      const cell = BUILD_CELL;
       const n = steps || 6;
       const rise = (riseTotal != null ? riseTotal : BUILD_LEVEL_H) / n;
-      const run = cell / n;
+      const run = (yaw === 0 || yaw === 2 ? z1 - z0 : x1 - x0) / n;
       const pad = inset != null ? inset : 0.12;
       for (let s = 0; s < n; s++) {
         let ax0, az0, ax1, az1;
@@ -7053,6 +7412,21 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       // landing
       buildPushBox(arr, hx - 0.35, mid - 0.08, hz - 0.35, hx + 0.35, mid + 0.04, hz + 0.35, rgb);
+    }
+
+    function buildUStairs(arr, x0, z0, x1, z1, base, yaw, rgb) {
+      const mid = base + BUILD_LEVEL_H * 0.5;
+      const hx = (x0 + x1) * 0.5;
+      const hz = (z0 + z1) * 0.5;
+      if (yaw === 0 || yaw === 2) {
+        buildStairsRun(arr, x0, z0, hx - 0.05, z1, base, yaw, rgb, 5, BUILD_LEVEL_H * 0.5, 0.06);
+        buildStairsRun(arr, hx + 0.05, z0, x1, z1, mid, (yaw + 2) & 3, rgb, 5, BUILD_LEVEL_H * 0.5, 0.06);
+        buildPushBox(arr, x0 + 0.05, mid - 0.08, hz - 0.38, x1 - 0.05, mid + 0.04, hz + 0.38, rgb);
+      } else {
+        buildStairsRun(arr, x0, z0, x1, hz - 0.05, base, yaw, rgb, 5, BUILD_LEVEL_H * 0.5, 0.06);
+        buildStairsRun(arr, x0, hz + 0.05, x1, z1, mid, (yaw + 2) & 3, rgb, 5, BUILD_LEVEL_H * 0.5, 0.06);
+        buildPushBox(arr, hx - 0.38, mid - 0.08, z0 + 0.05, hx + 0.38, mid + 0.04, z1 - 0.05, rgb);
+      }
     }
 
     function buildRamp(arr, x0, z0, x1, z1, base, yaw, rgb) {
@@ -7139,6 +7513,16 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (!hasE) buildPushBox(arr, x1 - beam, y0, fz0, x1, y1, fz1, rgb);
         return;
       }
+      if (type === "floor_frame") {
+        const slabY = levelFloorSlabY(base);
+        const y0 = slabY.y0, y1 = slabY.y1;
+        const frame = 0.34;
+        buildPushBox(arr, x0, y0, z0, x1, y1, z0 + frame, rgb);
+        buildPushBox(arr, x0, y0, z1 - frame, x1, y1, z1, rgb);
+        buildPushBox(arr, x0, y0, z0 + frame, x0 + frame, y1, z1 - frame, rgb);
+        buildPushBox(arr, x1 - frame, y0, z0 + frame, x1, y1, z1 - frame, rgb);
+        return;
+      }
       if (type === "floor_tri") {
         const slabY = levelFloorSlabY(base);
         const y0 = slabY.y0, y1 = slabY.y1;
@@ -7181,6 +7565,20 @@ fn fxaa(uv : vec2f) -> vec3f {
           } else {
             buildFrameWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, 1.1, 1.1, 0.9);
           }
+        } else if (type === "wall_frame") {
+          if (twig) {
+            buildTwigFrameWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, 2.55, 2.62, 0.12, seed);
+          } else {
+            buildFrameWall(arr, slab.x0, slab.y0, slab.z0, slab.x1, slab.y1, slab.z1, rgb, slab.axis, 2.55, 2.62, 0.12);
+          }
+        } else if (type === "pillar") {
+          const cx = (x0 + x1) * 0.5;
+          const cz = (z0 + z1) * 0.5;
+          const half = 0.14;
+          if (yaw === 0) buildPushBox(arr, cx - half, yWall0, z1 - half * 2, cx + half, y1, z1, rgb);
+          else if (yaw === 1) buildPushBox(arr, x1 - half * 2, yWall0, cz - half, x1, y1, cz + half, rgb);
+          else if (yaw === 2) buildPushBox(arr, cx - half, yWall0, z0, cx + half, y1, z0 + half * 2, rgb);
+          else buildPushBox(arr, x0, yWall0, cz - half, x0 + half * 2, y1, cz + half, rgb);
         } else if (type === "roof_wall") {
           buildGableWall(arr, x0, z0, x1, z1, levelWallTopY(base), yaw, rgb);
         } else if (type === "door") {
@@ -7205,6 +7603,14 @@ fn fxaa(uv : vec2f) -> vec3f {
         buildLStairs(arr, x0, z0, x1, z1, base + BUILD_FOUND_H * 0.15, yaw, rgb);
         return;
       }
+      if (type === "stairs_u") {
+        buildUStairs(arr, x0, z0, x1, z1, base + BUILD_FOUND_H * 0.15, yaw, rgb);
+        return;
+      }
+      if (type === "floor_steps") {
+        buildStairsRun(arr, x0, z0, x1, z1, base + BUILD_FOUND_H * 0.15, yaw, rgb, 3, BUILD_FOUND_H * 0.8, 0.18);
+        return;
+      }
       if (type === "ramp") {
         buildRamp(arr, x0, z0, x1, z1, base + BUILD_FOUND_H * 0.15, yaw, rgb);
         return;
@@ -7215,6 +7621,10 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       if (type === "roof_tri") {
         buildTriRoof(arr, x0, z0, x1, z1, levelWallTopY(base), yaw, rgb);
+        return;
+      }
+      if (type === "roof_ridge") {
+        buildRoofRidge(arr, x0, z0, x1, z1, levelWallTopY(base), yaw, rgb);
         return;
       }
       if (type === "roof_corner") {
@@ -7286,15 +7696,25 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (!open) return { minX: x0 + 0.01, maxX: x0 + t + dt, minY: y0, maxY: y1, minZ: hinge, maxZ: hinge + w };
         return { minX: x0 - 0.04, maxX: x0 + t + 0.06, minY: y0, maxY: y1, minZ: hinge - 0.14, maxZ: hinge - 0.02 };
       }
+      if (p.type === "pillar") {
+        const y0 = wallSeatY(p);
+        const y1 = y0 + BUILD_LEVEL_H;
+        const cx = (x0 + x1) * 0.5, cz = (z0 + z1) * 0.5;
+        const half = 0.16;
+        if (yaw === 0) return { minX: cx - half, maxX: cx + half, minY: y0, maxY: y1, minZ: z1 - half * 2, maxZ: z1 };
+        if (yaw === 1) return { minX: x1 - half * 2, maxX: x1, minY: y0, maxY: y1, minZ: cz - half, maxZ: cz + half };
+        if (yaw === 2) return { minX: cx - half, maxX: cx + half, minY: y0, maxY: y1, minZ: z0, maxZ: z0 + half * 2 };
+        return { minX: x0, maxX: x0 + half * 2, minY: y0, maxY: y1, minZ: cz - half, maxZ: cz + half };
+      }
       // Doorway / window: ray AABB = lintel only so aim passes through the hole
-      if (p.type === "doorway" || p.type === "doorway_d" || p.type === "window") {
+      if (p.type === "doorway" || p.type === "doorway_d" || p.type === "window" || p.type === "wall_frame") {
         const yWall0 = wallSeatY(p);
         const yTop = yWall0 + BUILD_LEVEL_H;
-        const openW = p.type === "doorway_d" ? 2.0 : (p.type === "window" ? 1.1 : BUILD_DOOR_W);
+        const openW = p.type === "wall_frame" ? 2.55 : (p.type === "doorway_d" ? 2.0 : (p.type === "window" ? 1.1 : BUILD_DOOR_W));
         const mid = yaw === 0 || yaw === 2 ? (x0 + x1) * 0.5 : (z0 + z1) * 0.5;
         const o0 = mid - openW * 0.5;
         const o1 = mid + openW * 0.5;
-        const lintY0 = p.type === "window" ? yWall0 + 2.0 : yWall0 + BUILD_DOOR_H;
+        const lintY0 = p.type === "wall_frame" ? yWall0 + 2.74 : (p.type === "window" ? yWall0 + 2.0 : yWall0 + BUILD_DOOR_H);
         if (yaw === 0) return { minX: o0, maxX: o1, minY: lintY0, maxY: yTop, minZ: z1 - t, maxZ: z1 };
         if (yaw === 2) return { minX: o0, maxX: o1, minY: lintY0, maxY: yTop, minZ: z0, maxZ: z0 + t };
         if (yaw === 1) return { minX: x1 - t, maxX: x1, minY: lintY0, maxY: yTop, minZ: o0, maxZ: o1 };
@@ -7342,7 +7762,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (p.isOpen) return [];
         return [pieceAabb(p)];
       }
-      if (p.type !== "doorway" && p.type !== "doorway_d" && p.type !== "window") {
+      if (p.type !== "doorway" && p.type !== "doorway_d" && p.type !== "window" && p.type !== "wall_frame") {
         if (isWallType(p.type)) {
           // Neighbor solid wall on a doorway edge would seal the hole — skip collider
           if (wallOverlapsDoorwayOpening(p)) return [];
@@ -7358,7 +7778,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const yWall0 = wallSeatY(p);
       const y1 = yWall0 + BUILD_LEVEL_H;
       // Wider than mesh hole so PLAYER_RADIUS (0.45) fits through 1.2 m doors
-      const openW = p.type === "doorway_d" ? 2.15 : (p.type === "window" ? 1.1 : Math.max(BUILD_DOOR_W, 1.55));
+      const openW = p.type === "wall_frame" ? 2.58 : (p.type === "doorway_d" ? 2.15 : (p.type === "window" ? 1.1 : Math.max(BUILD_DOOR_W, 1.55)));
       const mid = yaw === 0 || yaw === 2 ? (x0 + x1) * 0.5 : (z0 + z1) * 0.5;
       const o0 = mid - openW * 0.5;
       const o1 = mid + openW * 0.5;
@@ -7370,7 +7790,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           out.push({ minX: o0, maxX: o1, minY: yWall0, maxY: yWall0 + 0.9, minZ: z1 - t, maxZ: z1 });
           out.push({ minX: o0, maxX: o1, minY: yWall0 + 2.0, maxY: y1, minZ: z1 - t, maxZ: z1 });
         } else {
-          out.push({ minX: o0, maxX: o1, minY: yWall0 + BUILD_DOOR_H, maxY: y1, minZ: z1 - t, maxZ: z1 });
+          out.push({ minX: o0, maxX: o1, minY: yWall0 + (p.type === "wall_frame" ? 2.74 : BUILD_DOOR_H), maxY: y1, minZ: z1 - t, maxZ: z1 });
         }
       } else if (yaw === 2) {
         out.push({ minX: x0, maxX: o0, minY: yWall0, maxY: y1, minZ: z0, maxZ: z0 + t });
@@ -7379,7 +7799,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           out.push({ minX: o0, maxX: o1, minY: yWall0, maxY: yWall0 + 0.9, minZ: z0, maxZ: z0 + t });
           out.push({ minX: o0, maxX: o1, minY: yWall0 + 2.0, maxY: y1, minZ: z0, maxZ: z0 + t });
         } else {
-          out.push({ minX: o0, maxX: o1, minY: yWall0 + BUILD_DOOR_H, maxY: y1, minZ: z0, maxZ: z0 + t });
+          out.push({ minX: o0, maxX: o1, minY: yWall0 + (p.type === "wall_frame" ? 2.74 : BUILD_DOOR_H), maxY: y1, minZ: z0, maxZ: z0 + t });
         }
       } else if (yaw === 1) {
         out.push({ minX: x1 - t, maxX: x1, minY: yWall0, maxY: y1, minZ: z0, maxZ: o0 });
@@ -7388,7 +7808,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           out.push({ minX: x1 - t, maxX: x1, minY: yWall0, maxY: yWall0 + 0.9, minZ: o0, maxZ: o1 });
           out.push({ minX: x1 - t, maxX: x1, minY: yWall0 + 2.0, maxY: y1, minZ: o0, maxZ: o1 });
         } else {
-          out.push({ minX: x1 - t, maxX: x1, minY: yWall0 + BUILD_DOOR_H, maxY: y1, minZ: o0, maxZ: o1 });
+          out.push({ minX: x1 - t, maxX: x1, minY: yWall0 + (p.type === "wall_frame" ? 2.74 : BUILD_DOOR_H), maxY: y1, minZ: o0, maxZ: o1 });
         }
       } else {
         out.push({ minX: x0, maxX: x0 + t, minY: yWall0, maxY: y1, minZ: z0, maxZ: o0 });
@@ -7397,7 +7817,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           out.push({ minX: x0, maxX: x0 + t, minY: yWall0, maxY: yWall0 + 0.9, minZ: o0, maxZ: o1 });
           out.push({ minX: x0, maxX: x0 + t, minY: yWall0 + 2.0, maxY: y1, minZ: o0, maxZ: o1 });
         } else {
-          out.push({ minX: x0, maxX: x0 + t, minY: yWall0 + BUILD_DOOR_H, maxY: y1, minZ: o0, maxZ: o1 });
+          out.push({ minX: x0, maxX: x0 + t, minY: yWall0 + (p.type === "wall_frame" ? 2.74 : BUILD_DOOR_H), maxY: y1, minZ: o0, maxZ: o1 });
         }
       }
       return out;
@@ -7498,7 +7918,8 @@ fn fxaa(uv : vec2f) -> vec3f {
         + "|o" + Math.round((p._ox || 0) * 50) + "," + Math.round((p._oz || 0) * 50)
         + (p.type === "door" ? ("|op" + (p.isOpen ? 1 : 0) + "|lk" + (p.locked ? 1 : 0)) : "")
         + (p.type === "campfire" ? ("|lit" + (p.lit ? 1 : 0)) : "")
-        + "|ceil1|tc3|door3|chest2|bag3|wb2|twig2|fire2|softface1"; // bust cache — soft/hard faces
+        + (p.type === "workbench" ? ("|wbt" + (p.wbTier | 0) + "|s13") : "")
+        + "|ceil1|tc4|door3|chest3|bag3|wb5|twig2|fire2|softface1|wardrobe2"; // bust cache — WB ×1.3
     }
 
     function getCachedPieceMesh(p) {
@@ -8025,8 +8446,26 @@ fn fxaa(uv : vec2f) -> vec3f {
       const base = p.baseY + p.iy * BUILD_LEVEL_H;
       const yaw = ((p.yaw % 4) + 4) % 4;
       if (isFoundationType(p.type)) return base + BUILD_FOUND_H;
+      if (p.type === "floor_frame") {
+        const frame = 0.34;
+        const insideHole = px > x0 + frame && px < x1 - frame
+          && pz > z0 + frame && pz < z1 - frame;
+        return insideHole ? -Infinity : levelWallTopY(base);
+      }
       if (isFloorType(p.type)) return levelWallTopY(base);
-      if (p.type === "stairs" || p.type === "stairs_l" || p.type === "ramp") {
+      if (p.type === "stairs_u") {
+        const y0 = base + BUILD_FOUND_H * 0.15;
+        const hx = (x0 + x1) * 0.5;
+        const hz = (z0 + z1) * 0.5;
+        let t;
+        if (yaw === 0) t = px < hx ? (pz - z0) / cell * 0.5 : 0.5 + (z1 - pz) / cell * 0.5;
+        else if (yaw === 2) t = px < hx ? (z1 - pz) / cell * 0.5 : 0.5 + (pz - z0) / cell * 0.5;
+        else if (yaw === 1) t = pz < hz ? (px - x0) / cell * 0.5 : 0.5 + (x1 - px) / cell * 0.5;
+        else t = pz < hz ? (x1 - px) / cell * 0.5 : 0.5 + (px - x0) / cell * 0.5;
+        return y0 + Math.max(0, Math.min(1, t)) * BUILD_LEVEL_H;
+      }
+      if (p.type === "stairs" || p.type === "stairs_l" || p.type === "stairs_u"
+        || p.type === "floor_steps" || p.type === "ramp") {
         const y0 = base + BUILD_FOUND_H * 0.15;
         let t = 0;
         if (yaw === 0) t = (pz - z0) / cell;
@@ -8034,7 +8473,8 @@ fn fxaa(uv : vec2f) -> vec3f {
         else if (yaw === 2) t = (z1 - pz) / cell;
         else t = (x1 - px) / cell;
         t = Math.max(0, Math.min(1, t));
-        return y0 + BUILD_LEVEL_H * t;
+        const rise = p.type === "floor_steps" ? BUILD_FOUND_H * 0.8 : BUILD_LEVEL_H;
+        return y0 + rise * t;
       }
       return pieceAabb(p).maxY;
     }
@@ -8451,7 +8891,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       player.x = Math.cos(ang) * rad;
       player.z = Math.sin(ang) * rad;
     }
-    const TC_RADIUS = 16.0; // meters — ~5.3 foundations
+    const TC_RADIUS = 25.0; // Rust building privilege radius (~8 foundations)
+    const TC_VERTICAL_LIMIT = BUILD_LEVEL_H * 5; // cylindrical protection, about five floors
     const FOUND_MAX_ABOVE_TERRAIN = 3.2; // stilts height limit vs ground
     const STAB_VERT_LOSS = 0.12; // ~12% per level up
     const STAB_FLOOR_STEP = 0.22; // horizontal loss per cell from nearest vertical support
@@ -8461,10 +8902,8 @@ fn fxaa(uv : vec2f) -> vec3f {
     const DECAY_TICK_SEC = 30; // upkeep / wilderness check interval
     /** Skip wilderness decay for newly placed pieces (build session). */
     const DECAY_PLACE_GRACE_MS = 15 * 60 * 1000;
-    /** Unprotected twig → full decay in ~60 min (was ~100 s). */
-    const WILD_DECAY_FULL_SEC = 60 * 60;
-    /** Failed TC upkeep: full wall HP loss in ~40 min (was ~200 s for twigs). */
-    const UPKEEP_FAIL_FULL_SEC = 40 * 60;
+    /** Full decay time by material tier: twig, wood, stone, metal, armored. */
+    const DECAY_FULL_SEC = [15 * 60, 3 * 60 * 60, 4 * 60 * 60, 8 * 60 * 60, 12 * 60 * 60];
     const SOFT_SIDE_MULT = 10;
 
     const BUILD_TIERS = [
@@ -8487,8 +8926,12 @@ fn fxaa(uv : vec2f) -> vec3f {
     let activeTcId = null; // TC panel focus
 
     function tierMaxHp(tier) {
-      const t = BUILD_TIERS[Math.max(0, Math.min(BUILD_TIERS.length - 1, tier | 0))];
-      return t.hp;
+      const t = Math.max(0, Math.min(BUILD_TIERS.length - 1, tier | 0));
+      const ex = window.FalseWorldExplosives;
+      if (ex && ex.WALL_HP && Number.isFinite(ex.WALL_HP[t])) {
+        return ex.WALL_HP[t];
+      }
+      return BUILD_TIERS[t].hp;
     }
     function tierColor(tier) {
       return BUILD_TIERS[Math.max(0, Math.min(BUILD_TIERS.length - 1, tier | 0))].color;
@@ -8517,7 +8960,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     }
 
     /** Hammer can pick up / demolish own pieces only during this grace window. */
-    const DEMOLISH_GRACE_MS = 120000; // 2 min — then the piece is permanent
+    const DEMOLISH_GRACE_MS = 10 * 60 * 1000; // Rust: 10 minutes
 
     function ensurePieceInternals(p) {
       if (p.id == null || p.id === "") {
@@ -8764,19 +9207,58 @@ fn fxaa(uv : vec2f) -> vec3f {
       return (inv.wood | 0) + (inv.stone | 0) + (inv.metal | 0) + (inv.hq | 0) > 0;
     }
 
-    function tcConsumeUpkeep(tc, amount) {
-      syncTcInvFromSlots(tc);
-      // Accrue fractional wood so small bases don't burn 1 wood every tick
-      if (tc._upkeepDebt == null) tc._upkeepDebt = 0;
-      tc._upkeepDebt += Math.max(0, amount);
-      if (tc._upkeepDebt < 1) {
-        return tcSlotsHaveUpkeep(tc);
+    const TC_UPKEEP_MAX_DAYS = 7;
+    const TC_UPKEEP_RES = ["wood", "stone", "metal", "hq"];
+
+    /** Rust size tax: 10% (1–15) · 15% (16–40) · 20% (41–80) · 25% (81+). */
+    function upkeepTaxRate(pieceCount) {
+      const n = pieceCount | 0;
+      if (n <= 15) return 0.10;
+      if (n <= 40) return 0.15;
+      if (n <= 80) return 0.20;
+      return 0.25;
+    }
+
+    function isUpkeepPiece(p) {
+      if (!p || !p.type) return false;
+      if (p.type === "toolcupboard" || p.type === "workbench" || p.type === "research_table"
+        || p.type === "scrap_barrel" || p.type === "world_ore" || p.type === "world_tree"
+        || p.type === "campfire" || p.type === "sleeping_bag"
+        || p.type === "box_small" || p.type === "box_large") return false;
+      return true;
+    }
+
+    /** Resource value of a piece for daily tax (placement wood for twig, else upgrade cost). */
+    function pieceUpkeepCost(p) {
+      const t = p.tier | 0;
+      if (t <= 0) {
+        const meta = BUILD_BY_ID[p.type];
+        return { id: "wood", qty: meta && meta.cost != null ? meta.cost : 25 };
       }
-      let need = Math.floor(tc._upkeepDebt);
-      tc._upkeepDebt -= need;
-      const order = ["wood", "stone", "metal", "hq"];
-      for (let o = 0; o < order.length && need > 0; o++) {
-        const key = order[o];
+      return upgradeCostFor(p.type, t) || { id: "wood", qty: 25 };
+    }
+
+    /**
+     * Consume per-resource daily upkeep for one decay tick.
+     * Returns a map of resource ids that could not be paid (those tiers start decaying).
+     */
+    function tcConsumeUpkeep(tc, daily) {
+      syncTcInvFromSlots(tc);
+      if (!tc._upkeepDebtMap) tc._upkeepDebtMap = { wood: 0, stone: 0, metal: 0, hq: 0 };
+      const unpaid = {};
+      for (let o = 0; o < TC_UPKEEP_RES.length; o++) {
+        const key = TC_UPKEEP_RES[o];
+        const dayNeed = daily[key] || 0;
+        if (dayNeed <= 0) continue;
+        const have = (tc.inv && tc.inv[key]) | 0;
+        if (have <= 0) {
+          unpaid[key] = true;
+          continue;
+        }
+        tc._upkeepDebtMap[key] = (tc._upkeepDebtMap[key] || 0) + dayNeed * DECAY_TICK_SEC / 86400;
+        let need = Math.floor(tc._upkeepDebtMap[key]);
+        if (need < 1) continue;
+        tc._upkeepDebtMap[key] -= need;
         for (let i = 0; i < (tc.slots || []).length && need > 0; i++) {
           const s = tc.slots[i];
           if (!s || s.id !== key || s.qty <= 0) continue;
@@ -8785,14 +9267,38 @@ fn fxaa(uv : vec2f) -> vec3f {
           need -= use;
           if (s.qty <= 0) tc.slots[i] = null;
         }
+        syncTcInvFromSlots(tc);
+        if (need > 0) {
+          tc._upkeepDebtMap[key] += need;
+          unpaid[key] = true;
+        }
       }
+      return unpaid;
+    }
+
+    function tcProtectedDays(tc, daily) {
       syncTcInvFromSlots(tc);
-      if (need > 0) {
-        // Could not pay full debt — put remainder back so next ticks keep failing
-        tc._upkeepDebt += need;
-        return false;
+      let minDays = Infinity;
+      let any = false;
+      for (let i = 0; i < TC_UPKEEP_RES.length; i++) {
+        const id = TC_UPKEEP_RES[i];
+        const need = daily[id] || 0;
+        if (need <= 0.0001) continue;
+        any = true;
+        const have = (tc.inv && tc.inv[id]) | 0;
+        minDays = Math.min(minDays, have / need);
       }
-      return true;
+      if (!any) return TC_UPKEEP_MAX_DAYS;
+      if (!Number.isFinite(minDays)) return 0;
+      return Math.max(0, Math.min(TC_UPKEEP_MAX_DAYS, minDays));
+    }
+
+    function formatUpkeepReserve(days) {
+      if (days >= TC_UPKEEP_MAX_DAYS - 0.01) return "7d (máx)";
+      if (days >= 1) return (Math.floor(days * 10) / 10) + "d";
+      const hrs = Math.max(0, days * 24);
+      if (hrs >= 1) return (Math.floor(hrs * 10) / 10) + "h";
+      return Math.max(0, Math.ceil(hrs * 60)) + "m";
     }
 
     function pieceInDecayGrace(p) {
@@ -8858,17 +9364,62 @@ fn fxaa(uv : vec2f) -> vec3f {
       return out;
     }
 
-    function tcCovers(tc, x, z) {
-      const c = pieceWorldCenter(tc);
-      const dx = x - c.x, dz = z - c.z;
-      return dx * dx + dz * dz <= TC_RADIUS * TC_RADIUS;
+    /** Connected foundations extend privilege outward from the base footprint. */
+    function tcFoundationAnchors(tc) {
+      const foundations = buildPieces.filter((p) => isFoundationType(p.type));
+      const byCell = new Map();
+      for (let i = 0; i < foundations.length; i++) {
+        const p = foundations[i];
+        byCell.set(p.ix + "," + p.iy + "," + p.iz, p);
+      }
+      let seed = byCell.get(tc.ix + "," + tc.iy + "," + tc.iz);
+      if (!seed) {
+        for (let i = 0; i < foundations.length; i++) {
+          if (foundations[i].ix === tc.ix && foundations[i].iz === tc.iz) {
+            seed = foundations[i];
+            break;
+          }
+        }
+      }
+      if (!seed) return [];
+      const out = [];
+      const seen = new Set();
+      const queue = [seed];
+      while (queue.length) {
+        const p = queue.shift();
+        const key = p.ix + "," + p.iy + "," + p.iz;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(pieceWorldCenter(p));
+        const neighbors = [
+          [p.ix + 1, p.iy, p.iz], [p.ix - 1, p.iy, p.iz],
+          [p.ix, p.iy, p.iz + 1], [p.ix, p.iy, p.iz - 1],
+        ];
+        for (let i = 0; i < neighbors.length; i++) {
+          const n = neighbors[i];
+          const next = byCell.get(n[0] + "," + n[1] + "," + n[2]);
+          if (next) queue.push(next);
+        }
+      }
+      return out;
     }
 
-    function privilegeZonesAt(x, z) {
+    function tcCovers(tc, x, z, y) {
+      const tcCenter = pieceWorldCenter(tc);
+      if (Number.isFinite(y) && Math.abs(y - tcCenter.y) > TC_VERTICAL_LIMIT) return false;
+      const anchors = [tcCenter].concat(tcFoundationAnchors(tc));
+      for (let i = 0; i < anchors.length; i++) {
+        const dx = x - anchors[i].x, dz = z - anchors[i].z;
+        if (dx * dx + dz * dz <= TC_RADIUS * TC_RADIUS) return true;
+      }
+      return false;
+    }
+
+    function privilegeZonesAt(x, z, y) {
       const zones = [];
       const tcs = listToolCupboards();
       for (let i = 0; i < tcs.length; i++) {
-        if (tcCovers(tcs[i], x, z)) zones.push(tcs[i]);
+        if (tcCovers(tcs[i], x, z, y)) zones.push(tcs[i]);
       }
       return zones;
     }
@@ -8879,8 +9430,8 @@ fn fxaa(uv : vec2f) -> vec3f {
     }
 
     /** Rust privilege: blocked in enemy TC; free in wilderness; ok in own TC. */
-    function privilegeCheck(x, z) {
-      const zones = privilegeZonesAt(x, z);
+    function privilegeCheck(x, z, y) {
+      const zones = privilegeZonesAt(x, z, y);
       if (zones.length === 0) {
         return { ok: true, reason: "", wilderness: true, tc: null };
       }
@@ -8894,17 +9445,17 @@ fn fxaa(uv : vec2f) -> vec3f {
       return { ok: true, reason: "", wilderness: false, tc: friendly };
     }
 
-    function tcOverlapBlocked(ix, iz, ignoreId) {
+    function tcOverlapBlocked(ix, iz, iy, baseY, ignoreId) {
       const x = (ix + 0.5) * BUILD_CELL;
       const z = (iz + 0.5) * BUILD_CELL;
+      const y = (baseY || 0) + (iy || 0) * BUILD_LEVEL_H + BUILD_LEVEL_H * 0.5;
       const tcs = listToolCupboards();
       for (let i = 0; i < tcs.length; i++) {
         const tc = tcs[i];
         if (ignoreId && tc.id === ignoreId) continue;
-        const c = pieceWorldCenter(tc);
-        const dx = x - c.x, dz = z - c.z;
-        // Spheres must not overlap → centers farther than 2*R
-        if (Math.hypot(dx, dz) < TC_RADIUS * 2 - 0.05) return true;
+        // A second TC is forbidden inside an existing privilege zone. Separate
+        // external TCs are valid and their radii may later overlap via foundations.
+        if (tcCovers(tc, x, z, y)) return true;
       }
       return false;
     }
@@ -8924,7 +9475,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const deckY = p.baseY + p.iy * BUILD_LEVEL_H + BUILD_FOUND_H;
       // Wall tops / ceiling attach — must match wall mesh (includes FOUND_H)
       const topY = levelWallTopY(p.baseY + p.iy * BUILD_LEVEL_H);
-      if (isFoundationType(p.type) || p.type === "floor") {
+      if (isFoundationType(p.type) || isFloorType(p.type)) {
         const sides = [
           { yaw: 0, x: cx, z: z1, nix: p.ix, niz: p.iz + 1 },
           { yaw: 1, x: x1, z: cz, nix: p.ix + 1, niz: p.iz },
@@ -9324,6 +9875,7 @@ fn fxaa(uv : vec2f) -> vec3f {
     let blastFx = []; // {x,y,z,born,life,r0,r1}
     let rocketProjectiles = []; // {x,y,z,vx,vy,vz,born}
     let stickyCharges = []; // {id, kind, x,y,z, fuseAt, pieceId?}
+    let treeParticles = []; // ballistic wood splinters + ground dust
 
     function exApi() {
       return window.FalseWorldExplosives || null;
@@ -9569,9 +10121,133 @@ fn fxaa(uv : vec2f) -> vec3f {
         buildPushBox(arr, r.x - 0.08, r.y - 0.35, r.z - 0.08, r.x + 0.08, r.y - 0.12, r.z + 0.08, [1, 0.4, 0.1]);
       }
     }
+    function tickTreeParticles(dt) {
+      const step = Math.max(0, Math.min(0.05, dt || 0));
+      for (let i = treeParticles.length - 1; i >= 0; i--) {
+        const p = treeParticles[i];
+        p.age += step;
+        if (p.age >= p.life) {
+          treeParticles.splice(i, 1);
+          continue;
+        }
+        const drag = Math.exp(-(p.kind === "dust" ? 2.4 : 0.7) * step);
+        p.vx *= drag;
+        p.vz *= drag;
+        p.vy -= (p.kind === "dust" ? 0.8 : 8.5) * step;
+        p.x += p.vx * step;
+        p.y += p.vy * step;
+        p.z += p.vz * step;
+        const ground = chunk ? sampleHeight(chunk, p.x, p.z) + p.size * 0.45 : -999;
+        if (p.y < ground) {
+          p.y = ground;
+          if (p.kind === "chip" && !p.bounced && Math.abs(p.vy) > 0.7) {
+            p.bounced = true;
+            p.vy = Math.abs(p.vy) * 0.28;
+            p.vx *= 0.58;
+            p.vz *= 0.58;
+          } else {
+            p.vy = Math.max(0, p.vy);
+            p.vx *= 0.75;
+            p.vz *= 0.75;
+          }
+        }
+      }
+    }
+    function drawTreeParticles(arr) {
+      for (let i = 0; i < treeParticles.length; i++) {
+        const p = treeParticles[i];
+        const u = Math.min(1, p.age / p.life);
+        const fade = p.kind === "dust"
+          ? Math.max(0.42, 1 - u * 0.62)
+          : Math.max(0.16, 1 - u * 0.82);
+        const rgb = [p.r * fade, p.g * fade, p.b * fade];
+        if (p.kind === "dust") {
+          // Two soft radial cards form a translucent expanding dust puff.
+          const s = p.size * (0.58 + u * 1.95);
+          const spin = p.rot + p.spin * p.age;
+          buildPushDustQuad(arr, p.x, p.y, p.z, s, spin, rgb);
+          buildPushDustQuad(arr, p.x, p.y, p.z, s * 0.88, spin + Math.PI * 0.5, rgb);
+        } else {
+          // Two crossed tapered triangles read as thin, pointed wood splinters.
+          const dl = Math.hypot(p.ox, p.oy, p.oz) || 1;
+          const dx = p.ox / dl;
+          const dy = p.oy / dl;
+          const dz = p.oz / dl;
+          let sx = -dz, sy = 0, sz = dx;
+          let sl = Math.hypot(sx, sy, sz);
+          if (sl < 0.01) { sx = 1; sy = 0; sz = 0; sl = 1; }
+          sx /= sl; sy /= sl; sz /= sl;
+          const tx = dy * sz - dz * sy;
+          const ty = dz * sx - dx * sz;
+          const tz = dx * sy - dy * sx;
+          const spin = p.rot + p.spin * p.age;
+          const cs = Math.cos(spin);
+          const sn = Math.sin(spin);
+          const rx = sx * cs + tx * sn;
+          const ry = sy * cs + ty * sn;
+          const rz = sz * cs + tz * sn;
+          const qx = tx * cs - sx * sn;
+          const qy = ty * cs - sy * sn;
+          const qz = tz * cs - sz * sn;
+          const length = p.size * p.long;
+          const width = p.size * (0.38 + u * 0.08);
+          const tipX = p.x + dx * length;
+          const tipY = p.y + dy * length;
+          const tipZ = p.z + dz * length;
+          const baseX = p.x - dx * length * 0.38;
+          const baseY = p.y - dy * length * 0.38;
+          const baseZ = p.z - dz * length * 0.38;
+          buildPushTri(
+            arr,
+            tipX, tipY, tipZ,
+            baseX + rx * width, baseY + ry * width, baseZ + rz * width,
+            baseX - rx * width, baseY - ry * width, baseZ - rz * width,
+            rgb
+          );
+          buildPushTri(
+            arr,
+            tipX, tipY, tipZ,
+            baseX + qx * width * 0.7, baseY + qy * width * 0.7, baseZ + qz * width * 0.7,
+            baseX - qx * width * 0.7, baseY - qy * width * 0.7, baseZ - qz * width * 0.7,
+            rgb
+          );
+        }
+      }
+    }
+    function spawnTreeFallDust(fall) {
+      if (!fall) return;
+      const count = Math.min(72, 42 + Math.round((fall.scale || 1) * 12));
+      for (let i = 0; i < count; i++) {
+        const along = 0.28 + Math.random() * 0.72;
+        const cx = fall.x + fall.dirX * fall.fullH * along;
+        const cz = fall.z + fall.dirZ * fall.fullH * along;
+        const a = Math.random() * Math.PI * 2;
+        const spread = 0.12 + Math.random() * (0.62 + (fall.scale || 1) * 0.24);
+        const speed = 0.3 + Math.random() * 1.4;
+        const warm = Math.random();
+        treeParticles.push({
+          kind: "dust",
+          x: cx + Math.cos(a) * spread,
+          y: (chunk ? sampleHeight(chunk, cx, cz) : fall.y) + 0.22 + Math.random() * 0.38,
+          z: cz + Math.sin(a) * spread,
+          vx: Math.cos(a) * speed + fall.dirX * 0.25,
+          vy: 0.55 + Math.random() * 1.35,
+          vz: Math.sin(a) * speed + fall.dirZ * 0.25,
+          age: 0,
+          life: 1.05 + Math.random() * 0.9,
+          size: 0.12 + Math.random() * 0.18,
+          rot: Math.random() * Math.PI * 2,
+          spin: (Math.random() * 2 - 1) * 3.5,
+          r: 0.36 + warm * 0.13,
+          g: 0.27 + warm * 0.09,
+          b: 0.15 + warm * 0.05,
+        });
+      }
+    }
     function uploadFxMesh() {
       const arr = [];
       if (blastFx.length || rocketProjectiles.length) drawBlastFxOverlay(arr);
+      if (treeParticles.length) drawTreeParticles(arr);
       // Sticky charge blink
       const now = performance.now();
       for (let i = 0; i < stickyCharges.length; i++) {
@@ -9597,16 +10273,41 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
     }
 
-    function upgradeCostFor(nextTier) {
-      // next: 1 wood, 2 stone, 3 metal, 4 armored/hq
-      const costs = [
+    const UPGRADE_SIZE_GROUP = {
+      foundation: "large", roof: "large", ramp: "large", stairs: "large",
+      floor: "large", wall: "large", doorway: "large", window: "large",
+      wall_frame: "large", floor_frame: "large", stairs_l: "large", stairs_u: "large",
+      foundation_tri: "medium", roof_tri: "medium", roof_ridge: "medium", wall_half: "medium",
+      floor_tri: "small", wall_low: "small", pillar: "small", floor_steps: "small",
+    };
+    const UPGRADE_COSTS = {
+      large: [
+        null,
+        { id: "wood", qty: 200 },
+        { id: "stone", qty: 300 },
+        { id: "metal", qty: 200 },
+        { id: "hq", qty: 25 },
+      ],
+      medium: [
+        null,
+        { id: "wood", qty: 100 },
+        { id: "stone", qty: 150 },
+        { id: "metal", qty: 100 },
+        { id: "hq", qty: 13 },
+      ],
+      small: [
         null,
         { id: "wood", qty: 50 },
-        { id: "stone", qty: 100 },
-        { id: "metal", qty: 150 },
-        { id: "hq", qty: 200 },
-      ];
-      return costs[nextTier] || null;
+        { id: "stone", qty: 75 },
+        { id: "metal", qty: 50 },
+        { id: "hq", qty: 7 },
+      ],
+    };
+
+    function upgradeCostFor(pieceType, nextTier) {
+      const group = UPGRADE_SIZE_GROUP[pieceType] || "large";
+      const cost = UPGRADE_COSTS[group] && UPGRADE_COSTS[group][nextTier];
+      return cost ? { id: cost.id, qty: cost.qty } : null;
     }
 
     function repairResForTier(tier) {
@@ -9657,7 +10358,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         return false;
       }
       const next = (piece.tier | 0) + 1;
-      const cost = upgradeCostFor(next);
+      const cost = upgradeCostFor(piece.type, next);
       if (!cost) {
         onHud({ status: "Ya blindado" });
         return false;
@@ -9719,17 +10420,17 @@ fn fxaa(uv : vec2f) -> vec3f {
     }
 
     function dailyUpkeepFor(pieces) {
-      let total = 0;
+      const struct = [];
       for (let i = 0; i < pieces.length; i++) {
-        const p = pieces[i];
-        const meta = BUILD_BY_ID[p.type];
-        const base = meta && meta.cost != null ? meta.cost : 25;
-        const tierMul = BUILD_TIERS[p.tier | 0] ? BUILD_TIERS[p.tier | 0].upkeep : 1;
-        total += base * tierMul;
+        if (isUpkeepPiece(pieces[i])) struct.push(pieces[i]);
       }
-      // 10% small bases → 33% mega bases
-      const scale = 0.10 + 0.23 * Math.min(1, pieces.length / 80);
-      return total * scale;
+      const rate = upkeepTaxRate(struct.length);
+      const daily = { wood: 0, stone: 0, metal: 0, hq: 0, pieces: struct.length, rate: rate };
+      for (let i = 0; i < struct.length; i++) {
+        const cost = pieceUpkeepCost(struct[i]);
+        if (cost && daily[cost.id] != null) daily[cost.id] += cost.qty * rate;
+      }
+      return daily;
     }
 
     function isExposedWall(p) {
@@ -9758,19 +10459,20 @@ fn fxaa(uv : vec2f) -> vec3f {
         const pcs = piecesInTc(tc);
         for (let i = 0; i < pcs.length; i++) covered.add(pcs[i].id);
         const daily = dailyUpkeepFor(pcs);
-        // Real daily rate: consume (daily / 86400) * tickSec resources per tick
-        const tickNeed = daily * DECAY_TICK_SEC / 86400;
-        const hasStock = tcSlotsHaveUpkeep(tc);
-        const paid = hasStock && tcConsumeUpkeep(tc, tickNeed);
-        if (!paid) {
-          // Failed upkeep: slow HP bleed on walls / doors / roofs (not foundations)
+        const unpaid = tcConsumeUpkeep(tc, daily);
+        const unpaidKeys = Object.keys(unpaid);
+        if (unpaidKeys.length) {
           let hit = 0;
           for (let i = 0; i < pcs.length; i++) {
             const p = pcs[i];
-            if (!isWallType(p.type) && p.type !== "door" && !isRoofType(p.type)) continue;
+            if (!isUpkeepPiece(p)) continue;
             if (pieceInDecayGrace(p)) continue;
+            const cost = pieceUpkeepCost(p);
+            if (!cost || !unpaid[cost.id]) continue;
             ensurePieceInternals(p);
-            const dmg = Math.max(0.05, (p.maxHp || 50) * DECAY_TICK_SEC / UPKEEP_FAIL_FULL_SEC);
+            const tier = Math.max(0, Math.min(DECAY_FULL_SEC.length - 1, p.tier | 0));
+            const fullSec = DECAY_FULL_SEC[tier] || DECAY_FULL_SEC[0];
+            const dmg = Math.max(0.05, (p.maxHp || 50) * DECAY_TICK_SEC / fullSec);
             p.hp -= dmg;
             hit++;
             if (p.hp <= 0) {
@@ -9781,24 +10483,23 @@ fn fxaa(uv : vec2f) -> vec3f {
           if (hit) {
             recalculateStability();
             rebuildBuildMesh();
-            onHud({ status: "Decay · TC sin upkeep · paredes debilitadas" });
+            onHud({ status: "Decay · TC sin upkeep · " + unpaidKeys.join("/") });
           }
         }
         if (activeTcId === tc.id) refreshTcPanel();
       }
-      // Wilderness soft-decay (no TC cover) — ~1 h for full twig loss; grace while building
+      // Wilderness decay (no TC cover) — full time by material tier
       let wildRemoved = false;
       let wildDamaged = false;
       for (let i = buildPieces.length - 1; i >= 0; i--) {
         const p = buildPieces[i];
         if (covered.has(p.id)) continue;
-        if (p.type === "toolcupboard" || p.type === "workbench" || p.type === "research_table"
-          || p.type === "scrap_barrel" || p.type === "world_ore" || p.type === "world_tree"
-          || p.type === "campfire" || p.type === "sleeping_bag"
-          || p.type === "box_small" || p.type === "box_large") continue;
+        if (!isUpkeepPiece(p)) continue;
         if (pieceInDecayGrace(p)) continue;
         ensurePieceInternals(p);
-        const dmg = Math.max(0.05, (p.maxHp || 50) * DECAY_TICK_SEC / WILD_DECAY_FULL_SEC);
+        const tier = Math.max(0, Math.min(DECAY_FULL_SEC.length - 1, p.tier | 0));
+        const fullSec = DECAY_FULL_SEC[tier] || DECAY_FULL_SEC[0];
+        const dmg = Math.max(0.05, (p.maxHp || 50) * DECAY_TICK_SEC / fullSec);
         p.hp -= dmg;
         if (p.hp <= 0) {
           buildPieces.splice(i, 1);
@@ -10013,7 +10714,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           tierEl.textContent = "Tier · " + curLabel + " (máximo)";
         } else {
           tierEl.textContent = "Tier · " + curLabel + " → " + BUILD_TIERS[next].label
-            + " (" + BUILD_TIERS[next].hp + " HP)";
+            + " (" + tierMaxHp(next) + " HP)";
         }
       }
       if (costEl) {
@@ -10024,7 +10725,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           costEl.textContent = "Sin más mejoras";
           costEl.classList.remove("is-short");
         } else {
-          const cost = upgradeCostFor(next);
+          const cost = upgradeCostFor(piece.type, next);
           if (!cost) {
             costEl.textContent = "Sin más mejoras";
             costEl.classList.remove("is-short");
@@ -10122,10 +10823,15 @@ fn fxaa(uv : vec2f) -> vec3f {
       tcPanelEl.className = "fw-tc-panel fw-tc-inv";
       tcPanelEl.innerHTML =
         '<div class="fw-tc-head">ARMARIO DE HERRAMIENTAS</div>' +
-        '<div class="fw-tc-sub">Autorización 16 m · deposita recursos de upkeep</div>' +
+        '<div class="fw-tc-sub">Privilegio 25 m · cilindro ~5 pisos · upkeep diario</div>' +
         '<div class="fw-tc-inv-label">Inventario del TC</div>' +
         '<div class="fw-tc-slots" id="fw-tc-slots"></div>' +
         '<div class="fw-tc-upkeep"></div>' +
+        '<div class="fw-tc-inv-label">Autorización</div>' +
+        '<div class="fw-tc-actions fw-tc-auth">' +
+        '  <button type="button" data-act="auth">Autorizarse</button>' +
+        '  <button type="button" data-act="clear">Limpiar lista</button>' +
+        "</div>" +
         '<div class="fw-tc-inv-label">Depositar</div>' +
         '<div class="fw-tc-actions">' +
         '  <button type="button" data-act="dep-wood">+50 Madera</button>' +
@@ -10142,6 +10848,33 @@ fn fxaa(uv : vec2f) -> vec3f {
           const tc = buildPieces.find((p) => p.id === activeTcId);
           if (!tc) return;
           ensurePieceInternals(tc);
+          if (act === "auth") {
+            if (!tc.auth) tc.auth = [];
+            if (tc.auth.indexOf(LOCAL_PLAYER_ID) < 0) {
+              tc.auth.push(LOCAL_PLAYER_ID);
+              onHud({ status: "Autorizado · Building Privilege activo" });
+            } else {
+              onHud({ status: "Ya autorizado en este TC" });
+            }
+            notifyWorldPlace(tc);
+            refreshTcPanel();
+            return;
+          }
+          if (act === "clear") {
+            if (!isAuthorizedOnTc(tc, LOCAL_PLAYER_ID)) {
+              onHud({ status: "Sin privilegio · autoriza primero" });
+              return;
+            }
+            tc.auth = [];
+            onHud({ status: "Lista limpiada · vuelve a autorizarte" });
+            notifyWorldPlace(tc);
+            refreshTcPanel();
+            return;
+          }
+          if (!isAuthorizedOnTc(tc, LOCAL_PLAYER_ID)) {
+            onHud({ status: "Sin privilegio · pulsa Autorizarse" });
+            return;
+          }
           const map = {
             "dep-wood": ["wood", 50],
             "dep-stone": ["stone", 50],
@@ -10186,6 +10919,10 @@ fn fxaa(uv : vec2f) -> vec3f {
         const tc = buildPieces.find((p) => p.id === activeTcId);
         if (!tc) return;
         ensurePieceInternals(tc);
+        if (!isAuthorizedOnTc(tc, LOCAL_PLAYER_ID)) {
+          onHud({ status: "Sin privilegio · pulsa Autorizarse" });
+          return;
+        }
         const idx = Number(slot.getAttribute("data-slot"));
         const s = tc.slots[idx];
         if (!s) return;
@@ -10228,21 +10965,31 @@ fn fxaa(uv : vec2f) -> vec3f {
       const up = tcPanelEl.querySelector(".fw-tc-upkeep");
       if (up) {
         syncTcInvFromSlots(tc);
-        up.textContent = "Upkeep · " + Math.ceil(daily) + "/día · " + pcs.length
-          + " pcs · stock W" + (tc.inv.wood | 0)
-          + " S" + (tc.inv.stone | 0)
-          + " M" + (tc.inv.metal | 0)
-          + " H" + (tc.inv.hq | 0);
+        const days = tcProtectedDays(tc, daily);
+        const pct = Math.round((daily.rate || 0.1) * 100);
+        const authN = (tc.auth && tc.auth.length) || 0;
+        const authed = isAuthorizedOnTc(tc, LOCAL_PLAYER_ID);
+        up.textContent = "Impuesto " + pct + "% · " + daily.pieces + " bloques · "
+          + "W" + Math.ceil(daily.wood) + " S" + Math.ceil(daily.stone)
+          + " M" + Math.ceil(daily.metal) + " H" + Math.ceil(daily.hq) + "/día · "
+          + "reserva " + formatUpkeepReserve(days)
+          + " · auth " + authN + (authed ? " · tú OK" : " · sin privilegio");
       }
     }
 
     function openTcPanel(tc) {
       ensureTcPanel();
+      ensurePieceInternals(tc);
       activeTcId = tc.id;
       tcPanelEl.classList.add("is-open");
       try { syncCursorForUi(); } catch (_) {}
       refreshTcPanel();
-      onHud({ status: "TC abierto · deposita upkeep · Esc cierra" });
+      const authed = isAuthorizedOnTc(tc, LOCAL_PLAYER_ID);
+      onHud({
+        status: authed
+          ? "TC abierto · deposita upkeep · Esc cierra"
+          : "TC · pulsa Autorizarse para Building Privilege",
+      });
     }
     function closeTcPanel() {
       activeTcId = null;
@@ -10270,7 +11017,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
       if (isFurnitureDeploy(type)) {
         if (type === "toolcupboard" && tcOverlapBlocked(ix, iz, null)) {
-          return { ok: false, reason: "TC solapado (16 m)" };
+          return { ok: false, reason: "TC solapado (25 m)" };
         }
         // Sleeping bag: free ground placement (any dry soil), footprint-only blockers
         if (type === "sleeping_bag") {
@@ -10351,7 +11098,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (!base.ok) return base;
 
       // Stability preview — reject if would be ~0
-      if (type === "toolcupboard") return { ok: true, reason: "TC · radio 16 m" };
+      if (type === "toolcupboard") return { ok: true, reason: "TC · radio 25 m" };
       if (type === "workbench") return { ok: true, reason: "Mesa · craft <2 m" };
       if (type === "research_table") return { ok: true, reason: "Investigación · E" };
       if (type === "campfire") return { ok: true, reason: "Calor 4 m" };
@@ -10494,10 +11241,18 @@ fn fxaa(uv : vec2f) -> vec3f {
         placed.doorYaw = ((placed.yaw % 4) + 4) % 4;
       }
       rebuildBuildMesh();
-      playBuildPlace("place");
+      // Furniture / deployables get a distinctive drop SFX; twig builds keep hammer
+      if (
+        placingTc || placingWb || placingResearch || placingMetalDoor
+        || placingCamp || placingBag || placingBox
+      ) {
+        playDeployPlace(placingMetalDoor ? "metal_door" : snap.type);
+      } else {
+        playBuildPlace("place");
+      }
       player.attackPulse = true;
       if (placingTc) {
-        onHud({ status: "Armario colocado · E para upkeep · radio 16 m" });
+        onHud({ status: "Armario colocado · E para upkeep · radio 25 m" });
         clearDeployIfEmpty("tool_cupboard_item");
         notifyWorldPlace(placed);
         return true;
@@ -10536,7 +11291,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         return true;
       }
       if (placingMetalDoor) {
-        onHud({ status: "Puerta metal colocada · 1000 HP" });
+        onHud({ status: "Puerta metal colocada · " + tierMaxHp(3) + " HP" });
         clearDeployIfEmpty("metal_door");
         notifyWorldPlace(placed);
         return true;
@@ -10897,8 +11652,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         return;
       }
       if (piece.type === "toolcupboard") {
-        // Rust-like TC: weathered oak planks, iron bands, brass lock, legs
-        // Ghost path passes rgbOverride [1,1,1]/[0,0,0] as ok flag for fs_build_ghost
+        // Wardrobe GLB (baked verts) — same privilege/UI TC, new visual
         const ghostFlag = rgbOverride;
         const cell = BUILD_CELL;
         const yaw = ((piece.yaw % 4) + 4) % 4;
@@ -10907,14 +11661,33 @@ fn fxaa(uv : vec2f) -> vec3f {
         const onDeck = !!findDeck(piece.ix, piece.iz, piece.iy);
         const lift = onDeck ? BUILD_FOUND_H : 0.06;
         const base = piece.baseY + piece.iy * BUILD_LEVEL_H + lift;
+        const mesh = wardrobeTcMesh;
+        if (mesh && mesh.floats && mesh.vertCount > 0) {
+          const F = mesh.floats;
+          for (let vi = 0; vi < mesh.vertCount; vi++) {
+            const o = vi * 11;
+            const lx = F[o], ly = F[o + 1], lz = F[o + 2];
+            const lnx = F[o + 3], lny = F[o + 4], lnz = F[o + 5];
+            let wx, wz, wnx, wnz;
+            if (yaw === 0) { wx = cx + lx; wz = cz + lz; wnx = lnx; wnz = lnz; }
+            else if (yaw === 1) { wx = cx + lz; wz = cz - lx; wnx = lnz; wnz = -lnx; }
+            else if (yaw === 2) { wx = cx - lx; wz = cz - lz; wnx = -lnx; wnz = -lnz; }
+            else { wx = cx - lz; wz = cz + lx; wnx = -lnz; wnz = lnx; }
+            const col = ghostFlag != null
+              ? ghostFlag
+              : [F[o + 6], F[o + 7], F[o + 8]];
+            // uv.x + 10 → fs_build textured-prop path (skip procedural plank wash)
+            buildPushVert(arr, wx, base + ly, wz, wnx, lny, wnz, col, F[o + 9] + 10.0, F[o + 10]);
+          }
+          return;
+        }
+        // Fallback procedural cabinet if mesh not loaded yet
         const oak = [0.42, 0.28, 0.14];
         const oakDark = [0.28, 0.17, 0.08];
         const oakLite = [0.52, 0.36, 0.18];
         const iron = [0.38, 0.40, 0.44];
         const ironDark = [0.18, 0.19, 0.22];
-        const rust = [0.48, 0.28, 0.14];
         const brass = [0.72, 0.58, 0.28];
-        const brassDark = [0.48, 0.36, 0.16];
         function tcBox(lx0, ly0, lz0, lx1, ly1, lz1, col) {
           const use = ghostFlag != null ? ghostFlag : col;
           const corners = [[lx0, lz0], [lx1, lz0], [lx0, lz1], [lx1, lz1]];
@@ -10931,47 +11704,14 @@ fn fxaa(uv : vec2f) -> vec3f {
           }
           buildPushBox(arr, minX, base + ly0, minZ, maxX, base + ly1, maxZ, use);
         }
-        // Feet / skirting
-        tcBox(-0.42, 0.00, -0.26, -0.28, 0.10, -0.12, ironDark);
-        tcBox(0.28, 0.00, -0.26, 0.42, 0.10, -0.12, ironDark);
-        tcBox(-0.42, 0.00, 0.12, -0.28, 0.10, 0.26, ironDark);
-        tcBox(0.28, 0.00, 0.12, 0.42, 0.10, 0.26, ironDark);
-        tcBox(-0.44, 0.08, -0.28, 0.44, 0.14, 0.28, oakDark);
-        // Plank body (horizontal boards)
-        tcBox(-0.40, 0.14, -0.24, 0.40, 0.42, 0.22, oak);
-        tcBox(-0.40, 0.42, -0.24, 0.40, 0.70, 0.22, oakLite);
-        tcBox(-0.40, 0.70, -0.24, 0.40, 0.98, 0.22, oak);
-        tcBox(-0.40, 0.98, -0.24, 0.40, 1.26, 0.22, oakDark);
-        tcBox(-0.40, 1.26, -0.24, 0.40, 1.44, 0.22, oak);
-        // Back recess
-        tcBox(-0.36, 0.18, -0.24, 0.36, 1.40, -0.16, oakDark);
-        // Iron hoop bands
-        tcBox(-0.41, 0.38, -0.25, 0.41, 0.46, 0.23, iron);
-        tcBox(-0.41, 0.86, -0.25, 0.41, 0.94, 0.23, iron);
-        tcBox(-0.41, 1.30, -0.25, 0.41, 1.38, 0.23, rust);
-        // Double doors
-        tcBox(-0.37, 0.18, 0.20, -0.02, 1.38, 0.265, oakLite);
-        tcBox(0.02, 0.18, 0.20, 0.37, 1.38, 0.265, oak);
-        // Door seam + trim
-        tcBox(-0.025, 0.16, 0.19, 0.025, 1.40, 0.275, brassDark);
-        // Handles
-        tcBox(-0.12, 0.72, 0.265, -0.05, 0.92, 0.30, iron);
-        tcBox(0.05, 0.72, 0.265, 0.12, 0.92, 0.30, iron);
-        // Padlock
-        tcBox(-0.05, 0.78, 0.28, 0.05, 0.90, 0.32, brass);
-        tcBox(-0.035, 0.90, 0.285, 0.035, 0.98, 0.315, brassDark);
-        // Crown / lid
-        tcBox(-0.46, 1.44, -0.30, 0.46, 1.52, 0.30, oakDark);
-        tcBox(-0.42, 1.52, -0.26, 0.42, 1.58, 0.26, iron);
-        // Vent slots on crown
-        tcBox(-0.28, 1.53, 0.18, -0.18, 1.57, 0.27, ironDark);
-        tcBox(-0.05, 1.53, 0.18, 0.05, 1.57, 0.27, ironDark);
-        tcBox(0.18, 1.53, 0.18, 0.28, 1.57, 0.27, ironDark);
-        // Corner rivets
-        tcBox(-0.40, 0.40, 0.22, -0.36, 0.44, 0.27, brass);
-        tcBox(0.36, 0.40, 0.22, 0.40, 0.44, 0.27, brass);
-        tcBox(-0.40, 0.88, 0.22, -0.36, 0.92, 0.27, brass);
-        tcBox(0.36, 0.88, 0.22, 0.40, 0.92, 0.27, brass);
+        tcBox(-0.40, 0.00, -0.22, 0.40, 1.55, 0.22, oak);
+        tcBox(-0.42, 1.50, -0.24, 0.42, 1.58, 0.24, oakDark);
+        tcBox(-0.36, 0.2, 0.18, 0.36, 1.4, 0.24, oakLite);
+        tcBox(-0.06, 0.7, 0.24, 0.06, 0.95, 0.30, brass);
+        tcBox(-0.38, 0.0, -0.20, -0.28, 0.1, -0.10, ironDark);
+        tcBox(0.28, 0.0, -0.20, 0.38, 0.1, -0.10, ironDark);
+        tcBox(-0.38, 0.0, 0.10, -0.28, 0.1, 0.20, iron);
+        tcBox(0.28, 0.0, 0.10, 0.38, 0.1, 0.20, iron);
         return;
       }
       if (piece.type === "workbench") {
@@ -10982,20 +11722,20 @@ fn fxaa(uv : vec2f) -> vec3f {
         const lift = onDeck ? BUILD_FOUND_H : 0.04;
         const base = piece.baseY + piece.iy * BUILD_LEVEL_H + lift;
         const yaw = ((piece.yaw % 4) + 4) % 4;
+        const tier = asWbTier(piece.wbTier);
+        if (emitWorkbenchMesh(arr, cx, cz, base, yaw, tier, rgbOverride)) return;
         const wood = [0.42, 0.28, 0.14];
         const steel = [0.45, 0.48, 0.52];
         const box = (lx0, y0, lz0, lx1, y1, lz1, col) =>
           buildPushBoxLocal(arr, cx, cz, yaw, lx0, y0, lz0, lx1, y1, lz1, col);
-        // table top + legs only (no floor range markers)
+        // Fallback procedural table
         box(-0.7, base + 0.72, -0.4, 0.7, base + 0.86, 0.4, wood);
         box(-0.62, base, -0.32, -0.5, base + 0.72, -0.2, wood);
         box(0.5, base, -0.32, 0.62, base + 0.72, -0.2, wood);
         box(-0.62, base, 0.2, -0.5, base + 0.72, 0.32, wood);
         box(0.5, base, 0.2, 0.62, base + 0.72, 0.32, wood);
-        // vise / tools on the tabletop
         box(0.25, base + 0.86, -0.1, 0.55, base + 1.05, 0.15, steel);
         box(-0.5, base + 0.86, -0.15, -0.15, base + 0.98, 0.1, [0.3, 0.32, 0.36]);
-        const tier = asWbTier(piece.wbTier);
         const badge = tier >= 3 ? [0.75, 0.35, 0.85] : (tier >= 2 ? [0.85, 0.55, 0.2] : [0.85, 0.65, 0.2]);
         box(-0.12, base + 0.88, 0.22, 0.12, base + 1.02, 0.38, badge);
         return;
@@ -11208,6 +11948,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         const yaw = ((piece.yaw % 4) + 4) % 4;
         const big = piece.type === "box_large";
         const s = big ? 1.0 : 0.72;
+        if (emitOldChestMesh(arr, cx, cz, base, yaw, s, rgbOverride)) return;
         const w = 0.52 * s;
         const d = 0.38 * s;
         const bodyH = 0.44 * s;
@@ -11284,7 +12025,9 @@ fn fxaa(uv : vec2f) -> vec3f {
         const cx = (piece.ix + 0.5) * cell + (piece._ox || 0);
         const cz = (piece.iz + 0.5) * cell + (piece._oz || 0);
         const base = (piece.baseY || 0) + 0.02;
-        // Rust-like wooden loot chest — planks, iron bands, brass lock, arched lid
+        const yaw = ((piece.yaw % 4) + 4) % 4;
+        if (emitOldChestMesh(arr, cx, cz, base, yaw, 1.0, rgbOverride)) return;
+        // Fallback procedural wooden loot chest
         const oak = [0.48, 0.30, 0.14];
         const oakLite = [0.58, 0.38, 0.18];
         const oakDark = [0.30, 0.17, 0.08];
@@ -11468,7 +12211,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         const base = p.baseY + p.iy * BUILD_LEVEL_H + lift;
         return {
           minX: cx - he.hx, maxX: cx + he.hx,
-          minY: base, maxY: base + 1.58,
+          minY: base, maxY: base + 1.58, // wardrobe scaled to ~1.55 m
           minZ: cz - he.hz, maxZ: cz + he.hz,
         };
       }
@@ -11480,9 +12223,10 @@ fn fxaa(uv : vec2f) -> vec3f {
         const onDeck = !!findDeck(p.ix, p.iz, p.iy);
         const lift = onDeck ? BUILD_FOUND_H : 0.04;
         const base = p.baseY + p.iy * BUILD_LEVEL_H + lift;
+        const h = p.type === "workbench" ? 1.365 : 1.05; // WB GLB ×1.3
         return {
           minX: cx - he.hx, maxX: cx + he.hx,
-          minY: base, maxY: base + 1.05,
+          minY: base, maxY: base + h,
           minZ: cz - he.hz, maxZ: cz + he.hz,
         };
       }
@@ -11494,7 +12238,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         const onDeck = !!findDeck(p.ix, p.iz, p.iy);
         const lift = onDeck ? BUILD_FOUND_H : 0.03;
         const base = p.baseY + p.iy * BUILD_LEVEL_H + lift;
-        const h = p.type === "campfire" ? 1.15 : (p.type === "sleeping_bag" ? 0.45 : 0.65);
+        const h = p.type === "campfire" ? 1.15 : (p.type === "sleeping_bag" ? 0.45 : 0.55);
         return {
           minX: cx - he.hx, maxX: cx + he.hx,
           minY: base, maxY: base + h,
@@ -11506,10 +12250,11 @@ fn fxaa(uv : vec2f) -> vec3f {
         const cx = (p.ix + 0.5) * cell + (p._ox || 0);
         const cz = (p.iz + 0.5) * cell + (p._oz || 0);
         const base = (p.baseY || 0) + 0.02;
+        const he = furnitureHalfExtents("box_large", p.yaw);
         return {
-          minX: cx - 0.68, maxX: cx + 0.68,
-          minY: base, maxY: base + 0.78,
-          minZ: cz - 0.48, maxZ: cz + 0.48,
+          minX: cx - he.hx, maxX: cx + he.hx,
+          minY: base, maxY: base + 0.55,
+          minZ: cz - he.hz, maxZ: cz + he.hz,
         };
       }
       if (p.type === "world_ore") {
@@ -11855,13 +12600,18 @@ fn fxaa(uv : vec2f) -> vec3f {
       onHud({ status: "Fogata · +20 madera · calor ON" });
     }
 
+    /** At most one real tree mesh falls at once; later chops still leave a stump. */
+    let treeFalls = [];
+
     // Decay + vitals in update loop
     let __aaaUpdateHook = function (dt) {
       tickDecay(dt);
       tickVitals(dt);
       tickResourceRespawn(dt);
       tickExplosives(dt);
-      if (blastFx.length || rocketProjectiles.length || stickyCharges.length) uploadFxMesh();
+      tickTreeFalls(dt);
+      tickTreeParticles(dt);
+      if (blastFx.length || rocketProjectiles.length || stickyCharges.length || treeParticles.length) uploadFxMesh();
       else if (fxVbo) {
         try { fxVbo.destroy(); } catch (_) {}
         fxVbo = null;
@@ -11883,6 +12633,10 @@ fn fxaa(uv : vec2f) -> vec3f {
       for (let i = 0; i < count; i++) {
         const o = (start + i) * stride;
         if (o + 2 >= cpu.length) break;
+        if (isTree) {
+          const px = cpu[o + 9] || 0;
+          if (px >= 103.5 && px < 106.0) continue; // keep stump wall + sealed cap
+        }
         cpu[o + 1] = -999; // bury below world
       }
       try {
@@ -11890,6 +12644,89 @@ fn fxaa(uv : vec2f) -> vec3f {
         const byteLen = count * stride * 4;
         device.queue.writeBuffer(vbo, byteOff, cpu.buffer, cpu.byteOffset + byteOff, byteLen);
       } catch (_) {}
+    }
+
+    function treeFullTrunkH(species, scale) {
+      const heights = [4.85, 4.6, 5.1, 4.8, 2.35, 2.7, 4.9, 5.2, 6.0, 5.0, 5.4];
+      return (heights[species | 0] || 4.85) * (scale || 1);
+    }
+
+    function startTreeFall(n) {
+      if (!n || n.kind !== "tree") return;
+      if (treeFalls.some((fall) => !fall.sunk)) {
+        sinkHarvestMesh(n);
+        return;
+      }
+      let dirX = n.x - player.x;
+      let dirZ = n.z - player.z;
+      let len = Math.hypot(dirX, dirZ);
+      if (len < 0.05) {
+        dirX = Math.sin(player.yaw || 0);
+        dirZ = Math.cos(player.yaw || 0);
+        len = 1;
+      }
+      const scale = n.treeScale || 1;
+      const fullH = treeFullTrunkH(n.species, scale);
+      const activeR = Math.max(1.7, scale * 1.72);
+      treeFalls.push({
+        node: n,
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        scale,
+        fullH,
+        dirX: dirX / len,
+        dirZ: dirZ / len,
+        stumpH: fullH * 0.15,
+        radiusSq: activeR * activeR,
+        elapsed: 0,
+        duration: 2.35,
+        creakPlayed: false,
+        impactPlayed: false,
+        sunk: false,
+      });
+    }
+
+    function treeFallAngle(fall) {
+      const u = Math.min(1, fall.elapsed / fall.duration);
+      const smooth = u * u * (3 - 2 * u);
+      return smooth * smooth * (Math.PI * 0.52);
+    }
+
+    function writeTreeFallUbo(ubo) {
+      const fall = treeFalls.find((item) => !item.sunk);
+      for (let i = 52; i < 60; i++) ubo[i] = 0;
+      if (!fall) return;
+      ubo[52] = fall.x;
+      ubo[53] = fall.y;
+      ubo[54] = fall.z;
+      ubo[55] = fall.stumpH;
+      ubo[56] = fall.dirX;
+      ubo[57] = fall.dirZ;
+      ubo[58] = treeFallAngle(fall);
+      ubo[59] = fall.radiusSq;
+    }
+
+    function tickTreeFalls(dt) {
+      for (let i = treeFalls.length - 1; i >= 0; i--) {
+        const fall = treeFalls[i];
+        fall.elapsed += Math.max(0, dt || 0);
+        const u = Math.min(1, fall.elapsed / fall.duration);
+        if (!fall.creakPlayed && u >= 0.12) {
+          fall.creakPlayed = true;
+          playTreeFallCreak(fall);
+        }
+        if (!fall.impactPlayed && u >= 0.92) {
+          fall.impactPlayed = true;
+          spawnTreeFallDust(fall);
+          playTreeFallImpact(fall);
+        }
+        if (!fall.sunk && fall.elapsed >= fall.duration + 0.25) {
+          fall.sunk = true;
+          sinkHarvestMesh(fall.node);
+        }
+        if (fall.elapsed >= fall.duration + 0.8) treeFalls.splice(i, 1);
+      }
     }
 
     function harvestNodeAabb(n) {
@@ -12065,7 +12902,8 @@ fn fxaa(uv : vec2f) -> vec3f {
       });
       if (n.hp <= 0) {
         n.dead = true;
-        sinkHarvestMesh(n);
+        if (n.kind === "tree") startTreeFall(n);
+        else sinkHarvestMesh(n);
         if (n.kind === "barrel") {
           const bust = 2 + ((Math.random() * 9) | 0);
           const bonus = invAdd("scrap", bust);
@@ -12079,7 +12917,7 @@ fn fxaa(uv : vec2f) -> vec3f {
               rebuildBuildMesh();
             }
           }
-          scheduleResourceRespawn("barrel");
+          // no world scrap-chest respawn
         } else {
           if (n.pieceId != null) {
             const idx = buildPieces.findIndex((p) => p.id === n.pieceId);
@@ -12279,6 +13117,12 @@ fn fxaa(uv : vec2f) -> vec3f {
           } catch (_) {}
         },
       });
+      try {
+        if (window.__fw) window.__fw.progression = progApi;
+      } catch (_) {}
+      try {
+        if (window.__fw) window.__fw.progression = progApi;
+      } catch (_) {}
     }
     function setCraftOpen(on) {
       ensureCraftUi();
@@ -12486,7 +13330,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       const base = p.baseY + p.iy * BUILD_LEVEL_H + lift;
       let h = 1.05;
       if (p.type === "research_table") h = 1.0;
-      else if (p.type === "workbench") h = 1.1;
+      else if (p.type === "workbench") h = 1.4;
       return { x: cx, y: base + h, z: cz };
     }
 
@@ -12752,8 +13596,43 @@ fn fxaa(uv : vec2f) -> vec3f {
           bagUiOpen = !!open;
           try { syncCursorForUi(); } catch (_) {}
         };
+        /** F7 held-tool editor: free cursor + LMB orbit around avatar. */
+        window.__fw.onToolEditorOpen = function (open) {
+          const next = !!open;
+          if (next === toolEditorUiOpen) {
+            try { syncCursorForUi(); } catch (_) {}
+            return;
+          }
+          toolEditorUiOpen = next;
+          if (toolEditorUiOpen) {
+            if (toolEditorSavedCam == null) toolEditorSavedCam = camMode;
+            if (camMode === "fpv") setCameraMode("follow");
+            player.freeLook = true;
+            try { clearLocoKeys(); } catch (_) {}
+            player.moving = false;
+            player.sprinting = false;
+            player.moveMx = 0;
+            player.moveMz = 0;
+            onHud({ status: "F7 · avatar quieto · gizmo / órbita · Guardar persiste" });
+          } else {
+            player.freeLook = false;
+            if (toolEditorSavedCam != null && toolEditorSavedCam !== camMode) {
+              setCameraMode(toolEditorSavedCam);
+            }
+            toolEditorSavedCam = null;
+          }
+          try { syncCursorForUi(); } catch (_) {}
+        };
         window.__fw.openWorkbenchUI = openWorkbenchUI;
         window.__fw.openResearchUI = openResearchUI;
+        window.__fw.openCraftUI = function () {
+          setCraftOpen(true);
+          return true;
+        };
+        window.__fw.ensureCraftUI = function () {
+          ensureCraftUi();
+          return progApi || null;
+        };
       }
     } catch (_) {}
 
@@ -13274,6 +14153,32 @@ fn fxaa(uv : vec2f) -> vec3f {
           }
         }
       };
+      /** Solid tapered trunk/stump. part_x=100+part keeps it separate from canopy cards. */
+      const pushTrunkCyl = (ox, oy, oz, species, scale, yaw, phase, part, segs) => {
+        const px = 100 + part;
+        const n = Math.max(8, segs | 0);
+        for (let i = 0; i < n; i++) {
+          const u0 = i / n;
+          const u1 = (i + 1) / n;
+          const quad = [[u0, 0], [u1, 0], [u0, 1], [u1, 0], [u1, 1], [u0, 1]];
+          for (const c of quad) {
+            treeVerts.push(ox, oy, oz, c[0], c[1], species, scale, yaw, phase, px);
+          }
+        }
+      };
+      /** Sealed cut face: fixed stump (part 5) or falling bole base (part 6). */
+      const pushStumpCap = (ox, oy, oz, species, scale, yaw, phase, segs, part = 5) => {
+        const px = 100 + part;
+        const n = Math.max(8, segs | 0);
+        for (let i = 0; i < n; i++) {
+          const u0 = i / n;
+          const u1 = (i + 1) / n;
+          const tri = [[u0, 0], [u0, 1], [u1, 1]];
+          for (const c of tri) {
+            treeVerts.push(ox, oy, oz, c[0], c[1], species, scale, yaw, phase, px);
+          }
+        }
+      };
       const trunkRadius = (species, scale) => {
         // Matches visual base half-width + flare; solid for gameplay
         // 0 oak 1 pine 2 maple 3 willow 4 scrub 5 cactus 6 snow-fir 7 birch 8 poplar 9 cedar 10 palm
@@ -13387,7 +14292,10 @@ fn fxaa(uv : vec2f) -> vec3f {
             const isPalm = species === 10;
 
             const treeVertStart = treeVerts.length / 10;
-            pushCross(wx, wy, wz, corners01, species, scale, yaw, phase, 0, 4);
+            pushTrunkCyl(wx, wy, wz, species, scale, yaw, phase, 4, 16);
+            pushStumpCap(wx, wy, wz, species, scale, yaw, phase, 16);
+            pushStumpCap(wx, wy, wz, species, scale, yaw, phase, 16, 6);
+            pushTrunkCyl(wx, wy, wz, species, scale, yaw, phase, 0, 20);
             treeColliders.push({ x: wx, z: wz, r: trunkRadius(species, scale) });
             // Foliage / crown radius (visual) + margin so boulders don't sit in needles
             let clearR = scale * 2.35;
@@ -13404,6 +14312,7 @@ fn fxaa(uv : vec2f) -> vec3f {
               kind: "tree", x: wx, y: wy, z: wz, r: Math.max(0.55, clear * 0.5),
               hp: 250, maxHp: 250, dropId: "wood", dropPerHit: 40, dead: false,
               meshStart: treeVertStart | 0, meshCount: 0,
+              species: species | 0, treeScale: scale, treeYaw: yaw,
             });
 
             if (isCactus) {
@@ -13482,7 +14391,7 @@ fn fxaa(uv : vec2f) -> vec3f {
               for (let bi = 0; bi < 5; bi++) {
                 const by = wy + trunkH * (0.52 + bi * 0.08 + hash(wx + bi * 9) * 0.03);
                 const bYaw = yaw + bi * PHYLLO + phase;
-                pushCross(wx, by, wz, corners01, species, scale * 0.92, bYaw, phase + bi * 0.06, 1, 2);
+                pushCross(wx, by, wz, corners01, species, scale * 0.92, bYaw, phase + bi * 0.06, 1, 3);
               }
               const crownY = wy + trunkH * 0.86;
               for (let pi = 0; pi < 8; pi++) {
@@ -13520,7 +14429,7 @@ fn fxaa(uv : vec2f) -> vec3f {
                 const by = wy + trunkH * (tAlong + hash(wx + bi * 9) * 0.03);
                 const bYaw = yaw + bi * PHYLLO + phase;
                 const bLen = scale * (0.9 + bi * 0.05);
-                pushCross(wx, by, wz, corners01, species, bLen, bYaw, phase + bi * 0.05, 1, 3);
+                pushCross(wx, by, wz, corners01, species, bLen, bYaw, phase + bi * 0.05, 1, 4);
                 // Tip position for leaf cards
                 const tipR = (0.35 + bi * 0.08) * scale;
                 branchTips.push({
@@ -13819,43 +14728,8 @@ fn fxaa(uv : vec2f) -> vec3f {
         pushRock(c.x, c.y, c.z, c.kind, c.scale, c.yaw, c.phase);
       }
 
-      // Scrap chests — break for 2–10 scrap
-      let nBarrels = 0;
-      for (let bi = 0; bi < 16; bi++) {
-        const ang = (bi / 16) * Math.PI * 2 + chunk.seed * 0.07;
-        const rad = 18 + (bi % 5) * 3.5 + hash(bi * 17.3 + chunk.seed) * 4;
-        const bx = chunk.origin_x + Math.cos(ang) * rad;
-        const bz = chunk.origin_z + Math.sin(ang) * rad;
-        if (islandEdge(bx, bz) > 0.08) continue;
-        const by = sampleHeight(chunk, bx, bz);
-        if (by < SEA_Y + 0.12) continue;
-        const ix = Math.floor(bx / BUILD_CELL);
-        const iz = Math.floor(bz / BUILD_CELL);
-        const ox = bx - (ix + 0.5) * BUILD_CELL;
-        const oz = bz - (iz + 0.5) * BUILD_CELL;
-        const barrel = ensurePieceInternals({
-          type: "scrap_barrel",
-          ix, iy: 0, iz, yaw: 0,
-          baseY: by,
-          tier: 0,
-          ownerId: "world",
-          _ox: ox,
-          _oz: oz,
-        });
-        buildPieces.push(barrel);
-        harvestNodes.push({
-          kind: "barrel",
-          x: bx, y: by, z: bz, r: 0.5,
-          hp: 55, maxHp: 55,
-          dropId: "scrap",
-          dropPerHit: 3,
-          pieceId: barrel.id,
-          dead: false,
-        });
-        buildBlockers.push({ x: bx, z: bz, r: 0.7, kind: "rock" });
-        nBarrels++;
-      }
-      if (nBarrels) rebuildBuildMesh();
+      // World scrap chests removed (old procedural loot chests).
+      // Placeable box_large / box_small use Animated Old Chest mesh instead.
 
       rockOccBase = new Float32Array(rockOccCpu);
       device.queue.writeBuffer(rockOccBuf, 0, rockOccCpu);
@@ -14075,6 +14949,74 @@ fn fxaa(uv : vec2f) -> vec3f {
     async function boot() {
       syncVitalsDom();
       syncStageCamFlags();
+      // Prefetch wardrobe TC mesh (visual only — privilege/upkeep unchanged)
+      try {
+        const res = await fetch("/props/wardrobe_tc_mesh.json", { cache: "force-cache" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.floats) && data.vertCount > 0) {
+            wardrobeTcMesh = {
+              floats: data.floats,
+              vertCount: data.vertCount | 0,
+              size: data.size || null,
+            };
+            try {
+              if (typeof pieceMeshCache !== "undefined" && pieceMeshCache.clear) pieceMeshCache.clear();
+              rebuildBuildMesh();
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        console.warn("[FW] wardrobe TC mesh", err);
+      }
+      // Prefetch Animated Old Chest (boxes + legacy scrap_barrel visual)
+      try {
+        const res = await fetch("/props/old_chest_mesh.json", { cache: "force-cache" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.floats) && data.vertCount > 0) {
+            oldChestMesh = {
+              floats: data.floats,
+              vertCount: data.vertCount | 0,
+              size: data.size || null,
+            };
+            try {
+              if (typeof pieceMeshCache !== "undefined" && pieceMeshCache.clear) pieceMeshCache.clear();
+              rebuildBuildMesh();
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        console.warn("[FW] old chest mesh", err);
+      }
+      // Prefetch workbench T1–T3 meshes
+      const wbUrls = [
+        [1, "/props/workbench_t1_mesh.json?v=2"],
+        [2, "/props/workbench_t2_mesh.json?v=2"],
+        [3, "/props/workbench_t3_mesh.json?v=2"],
+      ];
+      for (let wi = 0; wi < wbUrls.length; wi++) {
+        const tier = wbUrls[wi][0];
+        const url = wbUrls[wi][1];
+        try {
+          const res = await fetch(url, { cache: "no-cache" });
+          if (!res.ok) continue;
+          const data = await res.json();
+          if (data && Array.isArray(data.floats) && data.vertCount > 0) {
+            workbenchMeshes[tier] = {
+              floats: data.floats,
+              vertCount: data.vertCount | 0,
+              size: data.size || null,
+            };
+          }
+        } catch (err) {
+          console.warn("[FW] workbench T" + tier + " mesh", err);
+        }
+      }
+      try {
+        if (typeof pieceMeshCache !== "undefined" && pieceMeshCache.clear) pieceMeshCache.clear();
+        rebuildBuildMesh();
+      } catch (_) {}
       await bakeAt(0, 0);
       loop();
     }
@@ -14142,6 +15084,8 @@ fn fxaa(uv : vec2f) -> vec3f {
     }
     /** Mochila / caja / TC / craft / chat / mapa / upgrade — need OS cursor */
     let bagUiOpen = false;
+    let toolEditorUiOpen = false;
+    let toolEditorSavedCam = null;
     function isCursorUiOpen() {
       return !!(
         mapOpen
@@ -14151,6 +15095,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         || activeTcId
         || activeBoxId
         || bagUiOpen
+        || toolEditorUiOpen
       );
     }
     function syncCursorForUi() {
@@ -14213,7 +15158,15 @@ fn fxaa(uv : vec2f) -> vec3f {
       } catch (_) {}
     }
     function applyLookDelta(dx, dy) {
-      if (!controlsEnabled || isCursorUiOpen() || vitals.dead) return;
+      if (!controlsEnabled || vitals.dead) return;
+      // F7 tool editor: allow orbit with free cursor; other UIs block look
+      if (isCursorUiOpen() && !toolEditorUiOpen) return;
+      if (toolEditorUiOpen) {
+        const sens = 0.0038;
+        orbitYaw -= dx * sens;
+        orbitPitch = Math.max(ORBIT_PITCH_MIN, Math.min(ORBIT_PITCH_MAX, orbitPitch + dy * sens));
+        return;
+      }
       if (camMode === "fpv") {
         const sens = 0.0024;
         if (player.freeLook) {
@@ -14675,6 +15628,184 @@ fn fxaa(uv : vec2f) -> vec3f {
       } catch (_) {}
     }
 
+    /** Noise burst helper for deploy SFX. */
+    function playNoiseBurst(opts) {
+      if (!audio.ctx) return;
+      const o = opts || {};
+      const dur = o.dur != null ? o.dur : 0.12;
+      const t0 = audio.ctx.currentTime + (o.delay || 0);
+      const nLen = Math.max(1, Math.floor(audio.ctx.sampleRate * dur));
+      const nBuf = audio.ctx.createBuffer(1, nLen, audio.ctx.sampleRate);
+      const data = nBuf.getChannelData(0);
+      for (let i = 0; i < nLen; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nLen, o.fall != null ? o.fall : 1.4);
+      const src = audio.ctx.createBufferSource();
+      const g = audio.ctx.createGain();
+      const f = audio.ctx.createBiquadFilter();
+      src.buffer = nBuf;
+      f.type = o.filter || "lowpass";
+      f.frequency.value = o.freq != null ? o.freq : 900;
+      f.Q.value = o.q != null ? o.q : 0.7;
+      g.gain.setValueAtTime(Math.max(0.001, o.vol != null ? o.vol : 0.3), t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      src.connect(f);
+      f.connect(g);
+      g.connect(audio.sfxBus || audio.master);
+      src.start(t0);
+      src.stop(t0 + dur + 0.02);
+    }
+
+    /**
+     * Distinct SFX when placing furniture / deployables on structures or ground.
+     * type: toolcupboard | workbench | research_table | box_* | campfire | sleeping_bag | door | …
+     */
+    function playDeployPlace(type) {
+      unlockAudio();
+      if (!audio.soundOn || !audio.ctx) return;
+      const t = String(type || "");
+      try {
+        const t0 = audio.ctx.currentTime;
+        const bus = audio.sfxBus || audio.master;
+
+        if (t === "toolcupboard") {
+          // Heavy wardrobe set-down: low wood body + hollow cabinet knock
+          const body = audio.ctx.createOscillator();
+          const bodyG = audio.ctx.createGain();
+          body.type = "triangle";
+          body.frequency.setValueAtTime(90 + Math.random() * 18, t0);
+          body.frequency.exponentialRampToValueAtTime(38, t0 + 0.22);
+          bodyG.gain.setValueAtTime(0.62, t0);
+          bodyG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.28);
+          body.connect(bodyG); bodyG.connect(bus);
+          body.start(t0); body.stop(t0 + 0.3);
+          playNoiseBurst({ delay: 0.02, dur: 0.16, freq: 520, vol: 0.38, filter: "bandpass", q: 0.9 });
+          // Soft door panel knock
+          const knock = audio.ctx.createOscillator();
+          const knockG = audio.ctx.createGain();
+          knock.type = "sine";
+          knock.frequency.setValueAtTime(220 + Math.random() * 40, t0 + 0.08);
+          knock.frequency.exponentialRampToValueAtTime(110, t0 + 0.18);
+          knockG.gain.setValueAtTime(0.22, t0 + 0.08);
+          knockG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+          knock.connect(knockG); knockG.connect(bus);
+          knock.start(t0 + 0.08); knock.stop(t0 + 0.24);
+          return;
+        }
+
+        if (t === "workbench" || t === "research_table") {
+          // Heavy table drop + metal tool clink
+          const body = audio.ctx.createOscillator();
+          const bodyG = audio.ctx.createGain();
+          body.type = "triangle";
+          body.frequency.setValueAtTime(70 + Math.random() * 16, t0);
+          body.frequency.exponentialRampToValueAtTime(32, t0 + 0.2);
+          bodyG.gain.setValueAtTime(0.7, t0);
+          bodyG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.26);
+          body.connect(bodyG); bodyG.connect(bus);
+          body.start(t0); body.stop(t0 + 0.28);
+          playNoiseBurst({ delay: 0.01, dur: 0.14, freq: 380, vol: 0.42, filter: "lowpass" });
+          const clang = audio.ctx.createOscillator();
+          const clangG = audio.ctx.createGain();
+          clang.type = "square";
+          clang.frequency.setValueAtTime(1400 + Math.random() * 400, t0 + 0.06);
+          clang.frequency.exponentialRampToValueAtTime(420, t0 + 0.16);
+          clangG.gain.setValueAtTime(0.14, t0 + 0.06);
+          clangG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+          clang.connect(clangG); clangG.connect(bus);
+          clang.start(t0 + 0.06); clang.stop(t0 + 0.2);
+          return;
+        }
+
+        if (t === "box_small" || t === "box_large") {
+          // Hollow crate set-down
+          const body = audio.ctx.createOscillator();
+          const bodyG = audio.ctx.createGain();
+          body.type = "triangle";
+          const low = t === "box_large" ? 78 : 110;
+          body.frequency.setValueAtTime(low + Math.random() * 20, t0);
+          body.frequency.exponentialRampToValueAtTime(low * 0.45, t0 + 0.14);
+          bodyG.gain.setValueAtTime(t === "box_large" ? 0.58 : 0.45, t0);
+          bodyG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
+          body.connect(bodyG); bodyG.connect(bus);
+          body.start(t0); body.stop(t0 + 0.22);
+          playNoiseBurst({
+            delay: 0.015, dur: 0.11,
+            freq: t === "box_large" ? 480 : 720,
+            vol: 0.32, filter: "bandpass", q: 1.1,
+          });
+          return;
+        }
+
+        if (t === "campfire") {
+          // Stones + dry wood settle
+          playNoiseBurst({ dur: 0.1, freq: 900, vol: 0.36, filter: "bandpass", q: 1.2 });
+          const stone = audio.ctx.createOscillator();
+          const stoneG = audio.ctx.createGain();
+          stone.type = "sine";
+          stone.frequency.setValueAtTime(180 + Math.random() * 50, t0);
+          stone.frequency.exponentialRampToValueAtTime(70, t0 + 0.1);
+          stoneG.gain.setValueAtTime(0.35, t0);
+          stoneG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.14);
+          stone.connect(stoneG); stoneG.connect(bus);
+          stone.start(t0); stone.stop(t0 + 0.16);
+          playNoiseBurst({ delay: 0.05, dur: 0.08, freq: 1400, vol: 0.18, filter: "highpass" });
+          return;
+        }
+
+        if (t === "sleeping_bag") {
+          // Soft fabric flop
+          playNoiseBurst({ dur: 0.18, freq: 340, vol: 0.4, filter: "lowpass", fall: 0.9 });
+          const soft = audio.ctx.createOscillator();
+          const softG = audio.ctx.createGain();
+          soft.type = "sine";
+          soft.frequency.setValueAtTime(120 + Math.random() * 30, t0);
+          soft.frequency.exponentialRampToValueAtTime(55, t0 + 0.16);
+          softG.gain.setValueAtTime(0.28, t0);
+          softG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
+          soft.connect(softG); softG.connect(bus);
+          soft.start(t0); soft.stop(t0 + 0.22);
+          return;
+        }
+
+        if (t === "door" || t === "metal_door") {
+          // Metal door set into frame
+          const clang = audio.ctx.createOscillator();
+          const clangG = audio.ctx.createGain();
+          clang.type = "square";
+          clang.frequency.setValueAtTime(900 + Math.random() * 280, t0);
+          clang.frequency.exponentialRampToValueAtTime(220, t0 + 0.18);
+          clangG.gain.setValueAtTime(0.22, t0);
+          clangG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+          clang.connect(clangG); clangG.connect(bus);
+          clang.start(t0); clang.stop(t0 + 0.24);
+          playNoiseBurst({ delay: 0.02, dur: 0.1, freq: 1600, vol: 0.2, filter: "highpass" });
+          const thud = audio.ctx.createOscillator();
+          const thudG = audio.ctx.createGain();
+          thud.type = "triangle";
+          thud.frequency.setValueAtTime(110, t0);
+          thud.frequency.exponentialRampToValueAtTime(50, t0 + 0.12);
+          thudG.gain.setValueAtTime(0.4, t0);
+          thudG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+          thud.connect(thudG); thudG.connect(bus);
+          thud.start(t0); thud.stop(t0 + 0.18);
+          return;
+        }
+
+        // Default deployable: solid wood furniture drop
+        const body = audio.ctx.createOscillator();
+        const bodyG = audio.ctx.createGain();
+        body.type = "triangle";
+        body.frequency.setValueAtTime(100 + Math.random() * 30, t0);
+        body.frequency.exponentialRampToValueAtTime(45, t0 + 0.16);
+        bodyG.gain.setValueAtTime(0.5, t0);
+        bodyG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
+        body.connect(bodyG); bodyG.connect(bus);
+        body.start(t0); body.stop(t0 + 0.22);
+        playNoiseBurst({ delay: 0.01, dur: 0.1, freq: 600, vol: 0.28, filter: "lowpass" });
+      } catch (_) {
+        playBuildPlace("place");
+      }
+    }
+
     /** Mid-swing gather SFX — axe wood / pick stone / barrel thud. */
     function playGatherHit(mode) {
       unlockAudio();
@@ -14782,6 +15913,80 @@ fn fxaa(uv : vec2f) -> vec3f {
       } catch (_) {}
     }
 
+    function treeSoundVolume(fall, base) {
+      const x = fall && fall.x != null ? fall.x : player.x;
+      const z = fall && fall.z != null ? fall.z : player.z;
+      const dist = Math.hypot(player.x - x, player.z - z);
+      return base / (1 + dist * 0.09);
+    }
+
+    function playTreeFallCreak(fall) {
+      unlockAudio();
+      if (!audio.soundOn || !audio.ctx) return;
+      try {
+        const t0 = audio.ctx.currentTime;
+        const vol = treeSoundVolume(fall, 0.34);
+        const nLen = Math.floor(audio.ctx.sampleRate * 0.62);
+        const nBuf = audio.ctx.createBuffer(1, nLen, audio.ctx.sampleRate);
+        const nd = nBuf.getChannelData(0);
+        let smoothNoise = 0;
+        for (let i = 0; i < nLen; i++) {
+          const t = i / nLen;
+          smoothNoise = smoothNoise * 0.965 + (Math.random() * 2 - 1) * 0.035;
+          const crack1 = Math.exp(-Math.pow((t - 0.18) / 0.055, 2));
+          const crack2 = Math.exp(-Math.pow((t - 0.58) / 0.09, 2)) * 0.72;
+          nd[i] = smoothNoise * (crack1 + crack2) * (1 - t * 0.45);
+        }
+        const creak = audio.ctx.createBufferSource();
+        const gain = audio.ctx.createGain();
+        const filter = audio.ctx.createBiquadFilter();
+        creak.buffer = nBuf;
+        filter.type = "bandpass";
+        filter.frequency.setValueAtTime(520, t0);
+        filter.frequency.exponentialRampToValueAtTime(190, t0 + 0.6);
+        filter.Q.value = 0.75;
+        gain.gain.setValueAtTime(Math.max(0.01, vol), t0);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.64);
+        creak.connect(filter);
+        filter.connect(gain);
+        gain.connect(audio.sfxBus || audio.master);
+        creak.start(t0);
+      } catch (_) {}
+    }
+
+    function playTreeFallImpact(fall) {
+      unlockAudio();
+      if (!audio.soundOn || !audio.ctx) return;
+      try {
+        const t0 = audio.ctx.currentTime;
+        const vol = treeSoundVolume(fall, 0.62);
+        const nLen = Math.floor(audio.ctx.sampleRate * 0.42);
+        const nBuf = audio.ctx.createBuffer(1, nLen, audio.ctx.sampleRate);
+        const nd = nBuf.getChannelData(0);
+        let body = 0;
+        for (let i = 0; i < nLen; i++) {
+          body = body * 0.91 + (Math.random() * 2 - 1) * 0.09;
+          const env = Math.pow(1 - i / nLen, 2.2);
+          const twig = i < nLen * 0.12 ? (Math.random() * 2 - 1) * 0.28 : 0;
+          nd[i] = (body + twig) * env;
+        }
+        const noise = audio.ctx.createBufferSource();
+        const noiseGain = audio.ctx.createGain();
+        const low = audio.ctx.createBiquadFilter();
+        noise.buffer = nBuf;
+        low.type = "lowpass";
+        low.frequency.setValueAtTime(620, t0);
+        low.frequency.exponentialRampToValueAtTime(120, t0 + 0.38);
+        low.Q.value = 0.55;
+        noiseGain.gain.setValueAtTime(Math.max(0.01, vol), t0);
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.44);
+        noise.connect(low);
+        low.connect(noiseGain);
+        noiseGain.connect(audio.sfxBus || audio.master);
+        noise.start(t0);
+      } catch (_) {}
+    }
+
     let gatherHitKick = 0;
 
     /** Brief crosshair flash + camera punch + chop chip burst when tool connects. */
@@ -14805,11 +16010,47 @@ fn fxaa(uv : vec2f) -> vec3f {
 
     function spawnChopChips(n) {
       if (!n) return;
-      try {
-        const y = (n.y || 0) + 1.15;
-        spawnBlastFx(n.x, y, n.z, 0.65);
-        spawnBlastFx(n.x + 0.15, y + 0.35, n.z - 0.1, 0.4);
-      } catch (_) {}
+      const towardX = player.x - n.x;
+      const towardZ = player.z - n.z;
+      const len = Math.hypot(towardX, towardZ) || 1;
+      const nx = towardX / len;
+      const nz = towardZ / len;
+      const hitR = 0.24 * (n.treeScale || 1);
+      const hitX = n.x + nx * hitR;
+      const hitY = (n.y || 0) + 0.9 + Math.random() * 0.35;
+      const hitZ = n.z + nz * hitR;
+      const count = 11 + ((Math.random() * 7) | 0);
+      for (let i = 0; i < count; i++) {
+        const spread = (Math.random() - 0.5) * 1.7;
+        const ca = Math.cos(spread);
+        const sa = Math.sin(spread);
+        const dx = nx * ca - nz * sa;
+        const dz = nz * ca + nx * sa;
+        const speed = 1.15 + Math.random() * 2.8;
+        const pale = Math.random();
+        treeParticles.push({
+          kind: "chip",
+          x: hitX + (Math.random() - 0.5) * 0.12,
+          y: hitY + (Math.random() - 0.5) * 0.16,
+          z: hitZ + (Math.random() - 0.5) * 0.12,
+          vx: dx * speed + (Math.random() - 0.5) * 0.45,
+          vy: 1.0 + Math.random() * 2.9,
+          vz: dz * speed + (Math.random() - 0.5) * 0.45,
+          age: 0,
+          life: 0.75 + Math.random() * 0.75,
+          size: 0.009 + Math.random() * 0.016,
+          long: 2.4 + Math.random() * 3.2,
+          ox: dx * 0.7 + (Math.random() - 0.5) * 0.9,
+          oy: 0.25 + Math.random() * 0.9,
+          oz: dz * 0.7 + (Math.random() - 0.5) * 0.9,
+          rot: Math.random() * Math.PI * 2,
+          spin: (Math.random() * 2 - 1) * 12,
+          bounced: false,
+          r: 0.48 + pale * 0.28,
+          g: 0.27 + pale * 0.2,
+          b: 0.1 + pale * 0.09,
+        });
+      }
     }
 
     function footSurface() {
@@ -14885,11 +16126,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         e.preventDefault();
       }
       if (e.code === "ControlLeft" || e.code === "ControlRight" || e.key === "Control") {
-        // Ctrl = crouch hold (chrome shortcuts blocked while playing — see blockBrowserChrome)
-        if (down) {
-          player.crouchToggle = false;
-          e.preventDefault();
-        }
+        if (down) e.preventDefault();
       }
     }
 
@@ -14912,7 +16149,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       }
 
       const mod = isModifierCode(e.code, e.key);
-      if (mod) applyModifierKeys(e, down);
+      if (mod && !capturedCtrlEvents.has(e)) applyModifierKeys(e, down);
 
       // Chat captures typing
       if (chatOpen && e.target && e.target.id === "fw-chat-input") {
@@ -15170,6 +16407,24 @@ fn fxaa(uv : vec2f) -> vec3f {
       if (t.isContentEditable) return true;
       return !!(t.closest && t.closest("input, textarea, select, [contenteditable='true']"));
     }
+    const capturedCtrlEvents = new WeakSet();
+    function captureControlCrouch(e) {
+      const isCtrl =
+        e.code === "ControlLeft" ||
+        e.code === "ControlRight" ||
+        e.key === "Control";
+      if (!isCtrl) return;
+      const down = e.type === "keydown";
+      capturedCtrlEvents.add(e);
+      if (e.code) keys[e.code] = down;
+      if (e.key === "Control") {
+        keys.ControlLeft = down;
+        keys.ControlRight = down;
+      }
+      // Hold-to-crouch: Ctrl alone (or with WASD) crouches while held.
+      // Sticky toggle remains on X (crouchToggle).
+      if (down) e.preventDefault();
+    }
     function blockBrowserChrome(e) {
       if (chatOpen || craftOpen || mapOpen) return;
       if (isTypingTarget(e.target)) return;
@@ -15217,6 +16472,8 @@ fn fxaa(uv : vec2f) -> vec3f {
     const kd = (e) => onKey(e, true);
     const ku = (e) => onKey(e, false);
     // Capture on window + document — Ctrl+W must not reach chrome first
+    window.addEventListener("keydown", captureControlCrouch, true);
+    window.addEventListener("keyup", captureControlCrouch, true);
     window.addEventListener("keydown", blockBrowserChrome, true);
     document.addEventListener("keydown", blockBrowserChrome, true);
     window.addEventListener("keydown", kd);
@@ -15270,6 +16527,15 @@ fn fxaa(uv : vec2f) -> vec3f {
       ptrDownY = e.clientY;
       lastMx = e.clientX;
       lastMy = e.clientY;
+      // F7 tool editor: LMB drag orbits the avatar (no place / swing)
+      // Skip if the VRM gizmo is handling this pointer
+      if (toolEditorUiOpen) {
+        if (window.__fw && window.__fw.toolGizmoDragging) return;
+        dragging = true;
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+        e.preventDefault();
+        return;
+      }
       // Build/deploy: place on press so RMB orbit can stay held
       if ((buildMode || deployMode) && !radialOpen && !vitals.dead) {
         e.preventDefault();
@@ -15311,6 +16577,11 @@ fn fxaa(uv : vec2f) -> vec3f {
         // Already placed on pointerdown while building
         if (buildPlacedOnDown) {
           buildPlacedOnDown = false;
+          if (!orbitRmb) dragging = false;
+          return;
+        }
+        // F7: LMB only orbits — never swing / place / hammer menu
+        if (toolEditorUiOpen) {
           if (!orbitRmb) dragging = false;
           return;
         }
@@ -15378,6 +16649,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         return;
       }
       // Orbit works with RMB even if LMB just placed a piece
+      if (window.__fw && window.__fw.toolGizmoDragging) return;
       if ((!dragging && !orbitRmb) || !controlsEnabled) return;
       const dx = e.clientX - lastMx, dy = e.clientY - lastMy;
       if (!buildPlacedOnDown) ptrDragDist += Math.abs(dx) + Math.abs(dy);
@@ -15415,6 +16687,16 @@ fn fxaa(uv : vec2f) -> vec3f {
     });
     canvas.addEventListener("wheel", (e) => {
       if (!controlsEnabled) return;
+      // F7: always zoom around the avatar (ignore build-piece wheel)
+      if (toolEditorUiOpen) {
+        const minD = 1.8;
+        const maxD = 12;
+        orbitDist = Math.max(minD, Math.min(maxD, orbitDist + e.deltaY * 0.015));
+        if (camMode === "follow") followDist = orbitDist;
+        else freeOrbitDist = orbitDist;
+        e.preventDefault();
+        return;
+      }
       if (buildMode && !e.shiftKey) {
         e.preventDefault();
         const dir = e.deltaY > 0 ? 1 : -1;
@@ -15446,13 +16728,28 @@ fn fxaa(uv : vec2f) -> vec3f {
         if (chunk) updateCompass();
         return;
       }
-      player.freeLook = !!(keys.AltLeft || keys.AltRight);
-      // Crouch: C hold or X toggle — never Ctrl (Ctrl+W closes the browser tab)
-      player.crouching = !!(keys.ControlLeft || keys.ControlRight) || !!player.crouchToggle;
+      // F7 tool editor: freeze locomotion; keep orbit / free-look
+      if (toolEditorUiOpen) {
+        player.freeLook = true;
+        player.crouching = false;
+        player.moving = false;
+        player.sprinting = false;
+        player.moveMx = 0;
+        player.moveMz = 0;
+        try { clearLocoKeys(); } catch (_) {}
+      } else {
+        player.freeLook = !!(keys.AltLeft || keys.AltRight);
+        // Hold Ctrl = crouch · X = sticky toggle · works standing still (no WASD)
+        player.crouching = !player.swimming && !!(
+          player.crouchToggle
+          || keys.ControlLeft
+          || keys.ControlRight
+        );
+      }
       let mx = 0, mz = 0;
       // Rust WASD — same in FPV / follow / orbit (V cycles camera)
       // W forward · S back · A left · D right · diagonals OK · crouch walks too
-      if (!radialOpen && !upgradeMenuOpen) {
+      if (!toolEditorUiOpen && !radialOpen && !upgradeMenuOpen) {
         if (keys.KeyW || keys.ArrowUp) mz += 1;
         if (keys.KeyS || keys.ArrowDown) mz -= 1;
         if (keys.KeyA || keys.ArrowLeft) mx -= 1;
@@ -15596,8 +16893,12 @@ fn fxaa(uv : vec2f) -> vec3f {
           player._sinkY = player.feetY;
         }
       }
-      // Re-resolve crouch after jump may have cleared C
-      player.crouching = !!(keys.ControlLeft || keys.ControlRight) || !!player.crouchToggle;
+      // Re-resolve crouch after jump may have cleared the toggle / Ctrl.
+      player.crouching = !player.swimming && !!(
+        player.crouchToggle
+        || keys.ControlLeft
+        || keys.ControlRight
+      );
       // Eye height: FPV + 3rd person (C cycles cams) — lower when crouched
       const eyeH = player.crouching ? 1.05 : 1.55;
       player.y = player.feetY + eyeH;
@@ -15966,6 +17267,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         lookAt: lastLookAt,
         attackPulse, gatherPulse, chopPulse, minePulse,
         gatherMode,
+        heldId: heldItem && heldItem.id ? String(heldItem.id) : "",
         gatherHold: !!(!player.moving && (gatherHold || gatherSwing)),
         camMode, eye: lastEye, target: lastTarget,
         aspect: size.w / Math.max(1, size.h), fovDeg: 48,
@@ -16068,7 +17370,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       ];
       const amb = 0.16 * dayW + 0.14 * duskW + 0.10 * nightW + 0.07;
 
-      const ubo = new Float32Array(56);
+      const ubo = new Float32Array(60);
       ubo.set(mvp, 0);
       // sun_dir stored so L = normalize(-sun_dir) points toward the light
       ubo[16] = -lightTo[0]; ubo[17] = -lightTo[1]; ubo[18] = -lightTo[2];
@@ -16085,6 +17387,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       ubo[47] = tod;
       ubo[48] = -moonTo[0]; ubo[49] = -moonTo[1]; ubo[50] = -moonTo[2];
       ubo[51] = amb;
+      writeTreeFallUbo(ubo);
       device.queue.writeBuffer(frameBuf, 0, ubo);
       // stash for sky pass + VRM light sync
       _celestial = { tod, sunTo, moonTo, dayW, nightW, duskW, lightCol, amb };
@@ -16140,6 +17443,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       } catch (_) {}
 
       const encoder = device.createCommandEncoder();
+      const binds = frameBinds();
       {
         const sp = new Float32Array([
           now * 0.001, OCEAN_PATCH0, OCEAN_PATCH1, 1.15,
@@ -16149,13 +17453,13 @@ fn fxaa(uv : vec2f) -> vec3f {
         device.queue.writeBuffer(oceanDrawParamsBuf, 0, new Float32Array([OCEAN_PATCH0, OCEAN_PATCH1, SEA_Y, 1.15]));
         const cpass = encoder.beginComputePass();
         cpass.setPipeline(oceanSimPipe);
-        cpass.setBindGroup(0, oceanSimBind());
+        cpass.setBindGroup(0, oceanSimBinds[foamFlip]);
         cpass.dispatchWorkgroups(OCEAN_SIM_RES / 8, OCEAN_SIM_RES / 8);
         cpass.end();
         foamFlip = 1 - foamFlip;
       }
 
-      if (grassReady) {
+      if (grassReady && (grassCullFrame++ % GRASS_CULL_INTERVAL) === 0) {
         const cullU = new ArrayBuffer(96);
         const cdv = new DataView(cullU);
         cdv.setFloat32(0, eye[0], true);
@@ -16290,7 +17594,7 @@ fn fxaa(uv : vec2f) -> vec3f {
       pass.drawIndexed(floorIndexCount);
       pass.setPipeline(oceanPipe);
       pass.setBindGroup(0, frameBind);
-      pass.setBindGroup(1, oceanDrawBind());
+      pass.setBindGroup(1, oceanDrawBinds[foamFlip]);
       pass.setVertexBuffer(0, oceanVbo);
       pass.setIndexBuffer(oceanIbo, "uint32");
       pass.drawIndexed(oceanIndexCount);
@@ -16344,7 +17648,7 @@ fn fxaa(uv : vec2f) -> vec3f {
         pass.draw(ghostVertCount);
       }
       if (fxVbo && fxVertCount) {
-        pass.setPipeline(ghostPipe);
+        pass.setPipeline(fxPipe);
         pass.setBindGroup(0, frameBind);
         pass.setVertexBuffer(0, fxVbo);
         pass.draw(fxVertCount);
@@ -16373,23 +17677,23 @@ fn fxaa(uv : vec2f) -> vec3f {
           colorAttachments: [{ view: bloomAView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
         });
         p.setPipeline(brightPipe);
-        p.setBindGroup(0, postBind(sceneView, sceneView));
+        p.setBindGroup(0, binds.scene);
         p.draw(3);
         p.end();
       }
-      for (let blurPass = 0; blurPass < 2; blurPass++) {
+      for (let blurPass = 0; blurPass < BLOOM_BLUR_PASSES; blurPass++) {
         let p = encoder.beginRenderPass({
           colorAttachments: [{ view: bloomBView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
         });
         p.setPipeline(blurHPipe);
-        p.setBindGroup(0, postBind(bloomAView, bloomAView));
+        p.setBindGroup(0, binds.bloomA);
         p.draw(3);
         p.end();
         p = encoder.beginRenderPass({
           colorAttachments: [{ view: bloomAView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
         });
         p.setPipeline(blurVPipe);
-        p.setBindGroup(0, postBind(bloomBView, bloomBView));
+        p.setBindGroup(0, binds.bloomB);
         p.draw(3);
         p.end();
       }
@@ -16399,7 +17703,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           colorAttachments: [{ view: dofView, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
         });
         p.setPipeline(dofPipe);
-        p.setBindGroup(0, postBind(sceneView, sceneView));
+        p.setBindGroup(0, binds.scene);
         p.draw(3);
         p.end();
       }
@@ -16413,7 +17717,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           }],
         });
         p.setPipeline(compPipe);
-        p.setBindGroup(0, postBind(sceneView, bloomAView, dofView));
+        p.setBindGroup(0, binds.composite);
         p.draw(3);
         p.end();
       }
@@ -16427,7 +17731,7 @@ fn fxaa(uv : vec2f) -> vec3f {
           }],
         });
         p.setPipeline(mergePipe);
-        p.setBindGroup(0, mergeBind(compView));
+        p.setBindGroup(0, binds.merge);
         p.draw(3);
         p.end();
       }
@@ -16443,7 +17747,10 @@ fn fxaa(uv : vec2f) -> vec3f {
     function destroy() {
       alive = false;
       cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", captureControlCrouch, true);
+      window.removeEventListener("keyup", captureControlCrouch, true);
       window.removeEventListener("keydown", blockBrowserChrome, true);
+      document.removeEventListener("keydown", blockBrowserChrome, true);
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
       window.removeEventListener("resize", onResize);

@@ -1,29 +1,30 @@
-/** False World progression — scrap currency · research table · tech tree · workbenches. */
+/** False World progression — scrap · research · Rust tech tree (T1–T3). v3 */
 (function () {
   const STORAGE_KEY = "fw_unlocked_blueprints_v1";
 
   /**
-   * Tech tree by workbench tier.
-   * dependency = prior node id in the same branch (must unlock first).
-   * wb = minimum workbench tier required to purchase.
+   * Tech trees by workbench tier (independent — like Rust).
+   * dependency = prior node id in same tier (must unlock first; no skipping).
+   * col/row = canvas grid (top → bottom progression).
+   * wb = workbench tier that owns this tree.
    */
   const TECH_TREE = {
     tier1: [
-      { id: "lock", label: "Cerradura", cost: 15, rarity: "common", unlocks: "key_lock", dependency: null, icon: "key_lock", wb: 1 },
-      { id: "metal_door", label: "Puerta metal", cost: 30, rarity: "uncommon", unlocks: "metal_door", dependency: "lock", icon: "metal_door", wb: 1 },
-      { id: "satchel", label: "Satchel", cost: 60, rarity: "rare", unlocks: "satchel", dependency: "metal_door", icon: "satchel", wb: 1 },
-      { id: "rocket", label: "Cohete", cost: 120, rarity: "very_rare", unlocks: "rocket", dependency: "satchel", icon: "rocket", wb: 1 },
+      { id: "t1_lock", label: "Cerradura", cost: 20, rarity: "common", unlocks: "key_lock", dependency: null, icon: "key_lock", wb: 1, col: 0, row: 0 },
+      { id: "t1_door", label: "Puerta metal", cost: 75, rarity: "uncommon", unlocks: "metal_door", dependency: "t1_lock", icon: "metal_door", wb: 1, col: 0, row: 1 },
+      { id: "t1_satchel", label: "Satchel", cost: 75, rarity: "rare", unlocks: "satchel", dependency: null, icon: "satchel", wb: 1, col: 2, row: 0 },
+      { id: "t1_rocket", label: "Cohete", cost: 125, rarity: "very_rare", unlocks: "rocket", dependency: "t1_satchel", icon: "rocket", wb: 1, col: 2, row: 1 },
     ],
     tier2: [
-      { id: "c4", label: "C4", cost: 120, rarity: "very_rare", unlocks: "c4", dependency: "rocket", icon: "c4", wb: 2 },
+      { id: "t2_c4", label: "C4", cost: 250, rarity: "very_rare", unlocks: "c4", dependency: null, icon: "c4", wb: 2, col: 1, row: 0 },
     ],
     tier3: [],
   };
 
-  const TIER_LABELS = {
-    tier1: "Workbench T1 · herramientas / armas básicas",
-    tier2: "Workbench T2 · equipo medio",
-    tier3: "Workbench T3 · élite / explosivos",
+  const TIER_META = {
+    tier1: { n: 1, label: "Tier 1", blurb: "Workbench T1 · herramientas / armas básicas" },
+    tier2: { n: 2, label: "Tier 2", blurb: "Workbench T2 · equipo medio" },
+    tier3: { n: 3, label: "Tier 3", blurb: "Workbench T3 · élite / explosivos" },
   };
 
   /** Always known (no scrap / no research). */
@@ -179,24 +180,44 @@
 
   /** Research table: sacrifice 1 item + scrap (max 120) → permanent blueprint. */
   const RESEARCH = {
-    key_lock: 15,
-    metal_door: 30,
-    satchel: 60,
-    rocket: 120,
-    c4: 120,
+    key_lock: 20,
+    metal_door: 75,
+    satchel: 75,
+    rocket: 125,
+    c4: 250,
   };
+
+
+  const RECIPE_CAT = {
+    workbench_1: "items", workbench_2: "items", workbench_3: "items",
+    research_table: "items",
+    key_lock: "construction", tool_cupboard_item: "construction",
+    campfire: "items", sleeping_bag: "items",
+    box_small: "items", box_large: "items",
+    metal_door: "construction",
+    satchel: "weapons", rocket: "weapons", c4: "weapons",
+  };
+  const CAT_ORDER = [
+    { id: "favourite", label: "FAVOURITE" },
+    { id: "common", label: "COMMON" },
+    { id: "construction", label: "CONSTRUCTION" },
+    { id: "items", label: "ITEMS" },
+    { id: "tools", label: "TOOLS" },
+    { id: "weapons", label: "WEAPONS" },
+    { id: "other", label: "OTHER" },
+  ];
 
   const DESCRIPTIONS = {
     workbench_1: "Mesa T1 (500 madera · 100 metal · sin scrap). E cerca: Tech Tree + craft avanzado.",
     workbench_2: "Mesa T2 (500 madera · 500 metal · sin scrap). Requiere WB T1 cerca.",
     workbench_3: "Mesa T3 (1000 metal · 100 HQM · sin scrap). Requiere WB T2 cerca.",
     research_table: "Mesa de investigación (200 metal). Sacrifica 1 objeto + scrap (máx 120) → plano permanente.",
-    key_lock: "Cierra puertas. Common · 15 scrap en research/tech.",
-    metal_door: "Puerta de metal. Uncommon · 30 scrap.",
-    satchel: "Explosivo · radio 4 m · soft ×1.1. Rare · 60 scrap. LMB coloca con mecha.",
-    rocket: "Cohete · splash ~4 paredes. Very rare · 120 scrap. LMB dispara.",
-    c4: "C4 · alto daño estructural. Very rare · 120 scrap. LMB coloca.",
-    tool_cupboard_item: "Armario de herramientas. Privilege 16 m y upkeep de la base.",
+    key_lock: "Cierra puertas. Common · 20 scrap en research/tech.",
+    metal_door: "Puerta de metal. Uncommon · 75 scrap.",
+    satchel: "Explosivo · radio 4 m · soft ×1.1. Rare · 75 scrap. LMB coloca con mecha.",
+    rocket: "Cohete · splash ~4 paredes. Very rare · 125 scrap. LMB dispara.",
+    c4: "C4 · alto daño estructural. Very rare · 250 scrap (T2). LMB coloca.",
+    tool_cupboard_item: "Armario de herramientas. Privilege 25 m y upkeep de la base.",
     scrap: "Chatarra. Solo para Tech Tree e investigación (máx 120/ítem). Barriles → scrap.",
     cloth: "Tela. Cosecha de árboles · fabrica sacos de dormir (×30).",
     food: "Comida. LMB para comer · restaura hambre.",
@@ -276,6 +297,9 @@
 
       let open = false;
       let tab = "quick"; // quick | tech | research
+      let fullMenu = false;
+      let craftSel = null;
+      let craftQty = 1;
       /** @type {"craft"|"workbench"|"research"} */
       let uiMode = "craft";
       let tableForced = false; // opened via E on entity
@@ -285,6 +309,11 @@
       let tipEl = null;
       let rmbHoldTimer = null;
       let rmbTarget = null;
+      /** Selected tech-tree node id (detail strip). */
+      let techSel = null;
+      /** Which tier canvas is showing (1–3). */
+      let techViewTier = 1;
+      const techCam = { x: 0, y: 0, z: 1, dragging: false, lx: 0, ly: 0, seeded: false };
 
       const root = document.createElement("div");
       root.id = "fw-prog";
@@ -293,9 +322,10 @@
       root.innerHTML =
         '<div class="fw-prog-panel">' +
         '  <div class="fw-prog-head">' +
-        '    <span class="fw-prog-title" id="fw-prog-title">FABRICACIÓN</span>' +
+        '    <span class="fw-prog-title" id="fw-prog-title">CRAFTING</span>' +
         '    <span class="fw-prog-wb" id="fw-prog-wb">WB · fuera de rango</span>' +
-        '    <kbd id="fw-prog-kbd">Q</kbd>' +
+        '    <button type="button" class="fw-prog-close" id="fw-prog-close" aria-label="Cerrar">×</button>' +
+        '    <kbd id="fw-prog-kbd">Tab</kbd>' +
         "  </div>" +
         '  <div class="fw-prog-tabs" id="fw-prog-tabs">' +
         '    <button type="button" data-tab="quick" class="is-on">Rápida</button>' +
@@ -315,6 +345,9 @@
       const kbdEl = root.querySelector("#fw-prog-kbd");
       const tabsEl = root.querySelector("#fw-prog-tabs");
       tipEl = root.querySelector("#fw-prog-tip");
+
+      const closeBtn = root.querySelector("#fw-prog-close");
+      if (closeBtn) closeBtn.addEventListener("click", () => closeUi());
 
       root.querySelector(".fw-prog-tabs").addEventListener("click", (ev) => {
         const btn = ev.target.closest("[data-tab]");
@@ -607,86 +640,263 @@
         foot.textContent = "Rápida = fabricar · Tech Tree = desbloquear (LMB también fabrica si ya aprendiste).";
       }
 
-      function paintTechTier(tierKey, nodes, wb) {
-        let html = '<div class="fw-prog-tier">';
-        html += '<div class="fw-prog-tier-head">' + (TIER_LABELS[tierKey] || tierKey) + "</div>";
-        html += '<div class="fw-prog-tree">';
-        for (let i = 0; i < nodes.length; i++) {
-          const n = nodes[i];
-          const owned = unlockedNodes.has(n.id) || hasBp(n.unlocks);
-          const depOk = nodeUnlocked(n, unlockedNodes);
-          const haveTier = effectiveWbTier();
-          const nodeNeed = Math.max(1, needWbTier(n.wb));
-          const atOk = techTreeReady() && (haveTier >= nodeNeed);
-          const recipe = RECIPES.find((r) => r.id === n.unlocks);
-          const st = recipe ? recipeState(recipe) : null;
-          const canBuy = !owned && depOk && atOk && scrapCount() >= n.cost;
-          const canCraft = !!(owned && recipe && st && st.can);
-          let cls = "fw-prog-node";
-          if (owned && canCraft) cls += " is-owned is-craftable";
-          else if (owned) cls += " is-owned";
-          else if (canBuy) cls += " is-buyable";
-          else if (!depOk || !atOk) cls += " is-locked";
-          else cls += " is-short";
-          let sub;
-          if (owned) {
-            if (!recipe) sub = "Aprendido";
-            else if (!st.wbOk) sub = "Aprendido · Mesa T" + recipe.wb + " para fabricar";
-            else if (!st.matsOk) sub = "Aprendido · faltan " + st.missing.join(", ");
-            else sub = "LMB fabricar · " + recipe.costs.map((c) => c.qty + " " + c.id).join(" · ");
-          } else if (!techTreeReady()) {
-            sub = "Acércate a una Mesa";
-          } else if (!depOk) {
-            sub = "Requiere anterior";
-          } else if (!atOk) {
-            sub = "Requiere WB T" + nodeNeed;
-          } else {
-            sub = n.cost + " scrap";
-          }
-          const disabled = owned ? !canCraft : (!depOk || !atOk);
-          html +=
-            '<button type="button" class="' + cls + '" data-tech="' + n.id + '"' +
-            (disabled ? " disabled" : "") + ">" +
-            (iconUrl(n.icon)
-              ? '<img class="fw-prog-icon" alt="" src="' + iconUrl(n.icon) + '" draggable="false">'
-              : '<span class="fw-prog-blob" data-id="' + n.icon + '"></span>') +
-            '<div class="fw-prog-card-meta">' +
-            '  <div class="fw-prog-card-name">' + n.label + (owned ? " · FABRICAR" : "") + "</div>" +
-            '  <div class="fw-prog-card-sub">' + sub + "</div>" +
-            "</div></button>";
-          if (i < nodes.length - 1) html += '<div class="fw-prog-edge" aria-hidden="true"></div>';
-        }
-        html += "</div></div>";
-        return html;
+      function tierKeyFor(n) {
+        return n === 3 ? "tier3" : (n === 2 ? "tier2" : "tier1");
+      }
+
+      function nodeCenter(n) {
+        const CELL = 72;
+        const COL_GAP = 56;
+        const ROW_GAP = 64;
+        const ox = 80;
+        const oy = 56;
+        const x = ox + (n.col | 0) * (CELL + COL_GAP) + CELL * 0.5;
+        const y = oy + (n.row | 0) * (CELL + ROW_GAP) + CELL * 0.5;
+        return { x, y, cell: CELL };
       }
 
       function paintTech() {
-        const wb = getWb();
-        let html = '<div class="fw-prog-scrap">Scrap · <strong>' + scrapCount() + "</strong>";
-        if (!techTreeReady()) {
-          html += ' <span class="fw-prog-warn">· sin mesa</span>';
+        const haveTier = effectiveWbTier();
+        // At a workbench: show that bench's tree. From craft menu: clamp to max WB you can use.
+        if (uiMode === "workbench" && tableForced) {
+          techViewTier = Math.max(1, Math.min(3, haveTier));
+        } else if (techViewTier > Math.max(1, haveTier) && haveTier >= 1) {
+          techViewTier = Math.max(1, haveTier);
+        }
+        techViewTier = Math.max(1, Math.min(3, techViewTier | 0));
+
+        const tKey = tierKeyFor(techViewTier);
+        const meta = TIER_META[tKey];
+        const nodes = TECH_TREE[tKey] || [];
+        const byId = Object.create(null);
+        for (let i = 0; i < nodes.length; i++) byId[nodes[i].id] = nodes[i];
+
+        let maxCol = 0, maxRow = 0;
+        for (let i = 0; i < nodes.length; i++) {
+          maxCol = Math.max(maxCol, nodes[i].col | 0);
+          maxRow = Math.max(maxRow, nodes[i].row | 0);
+        }
+        const CELL = 72;
+        const COL_GAP = 56;
+        const ROW_GAP = 64;
+        const worldW = 80 + (maxCol + 1) * (CELL + COL_GAP) + 120;
+        const worldH = 56 + (maxRow + 1) * (CELL + ROW_GAP) + 140;
+
+        if (!techCam.seeded) {
+          techCam.x = 40;
+          techCam.y = 28;
+          techCam.z = 1;
+          techCam.seeded = true;
+        }
+
+        const ready = techTreeReady();
+        const canBuyOnThisTier = ready && haveTier >= techViewTier;
+
+        let html = '<div class="fw-tt">';
+        html += '<div class="fw-tt-top">';
+        html += '<div class="fw-tt-scrap">Scrap · <strong>' + scrapCount() + "</strong>";
+        if (!ready) html += ' <span class="fw-prog-warn">· sin mesa</span>';
+        else if (!canBuyOnThisTier) html += ' <span class="fw-prog-warn">· requiere WB T' + techViewTier + "</span>";
+        html += "</div>";
+        html += '<div class="fw-tt-tiers">';
+        for (let ti = 1; ti <= 3; ti++) {
+          html +=
+            '<button type="button" class="fw-tt-tier-btn' +
+            (techViewTier === ti ? " is-on" : "") +
+            (haveTier < ti ? " is-gated" : "") +
+            '" data-tt-tier="' + ti + '">' +
+            "T" + ti +
+            "</button>";
         }
         html += "</div>";
-        html += '<p class="fw-prog-note">Scrap desbloquea planos. Con plano aprendido, <strong>LMB fabrica</strong> aquí (o en la pestaña Rápida).</p>';
-        if (TECH_TREE.tier1.length) html += paintTechTier("tier1", TECH_TREE.tier1, wb);
-        if (TECH_TREE.tier2.length) html += paintTechTier("tier2", TECH_TREE.tier2, wb);
-        if (TECH_TREE.tier3.length) html += paintTechTier("tier3", TECH_TREE.tier3, wb);
+        html += '<div class="fw-tt-hint">Arrastra · rueda zoom · LMB selecciona</div>';
+        html += "</div>";
+
+        html += '<div class="fw-tt-viewport" id="fw-tt-viewport">';
+        html +=
+          '<div class="fw-tt-world" id="fw-tt-world" style="width:' + worldW +
+          "px;height:" + worldH + "px;transform:translate(" + techCam.x + "px," + techCam.y +
+          "px) scale(" + techCam.z + ')">';
+
+        // Connector lines
+        html += '<svg class="fw-tt-lines" width="' + worldW + '" height="' + worldH + '" aria-hidden="true">';
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (!n.dependency || !byId[n.dependency]) continue;
+          const a = nodeCenter(byId[n.dependency]);
+          const b = nodeCenter(n);
+          const ownedParent = unlockedNodes.has(n.dependency) || hasBp(byId[n.dependency].unlocks);
+          html +=
+            '<path d="M' + a.x + " " + (a.y + a.cell * 0.5) +
+            " L" + a.x + " " + ((a.y + b.y) * 0.5) +
+            " L" + b.x + " " + ((a.y + b.y) * 0.5) +
+            " L" + b.x + " " + (b.y - b.cell * 0.5) +
+            '" class="fw-tt-edge' + (ownedParent ? " is-lit" : "") + '"/>';
+        }
+        html += "</svg>";
+
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          const c = nodeCenter(n);
+          const owned = unlockedNodes.has(n.id) || hasBp(n.unlocks);
+          const depOk = nodeUnlocked(n, unlockedNodes);
+          const canBuy = !owned && depOk && canBuyOnThisTier && scrapCount() >= n.cost;
+          const recipe = RECIPES.find((r) => r.id === n.unlocks);
+          const st = recipe ? recipeState(recipe) : null;
+          const canCraft = !!(owned && recipe && st && st.can);
+          let cls = "fw-tt-node";
+          if (techSel === n.id) cls += " is-sel";
+          if (owned) cls += " is-owned";
+          else if (canBuy) cls += " is-buyable";
+          else if (!depOk || !canBuyOnThisTier) cls += " is-locked";
+          else cls += " is-short";
+          if (canCraft) cls += " is-craftable";
+
+          html +=
+            '<button type="button" class="' + cls + '" data-tech="' + n.id + '"' +
+            ' style="left:' + (c.x - c.cell * 0.5) + "px;top:" + (c.y - c.cell * 0.5) +
+            "px;width:" + c.cell + "px;height:" + c.cell + 'px" title="' + n.label + '">' +
+            (iconUrl(n.icon)
+              ? '<img class="fw-tt-icon" alt="" src="' + iconUrl(n.icon) + '" draggable="false">'
+              : '<span class="fw-tt-blob" data-id="' + n.icon + '"></span>') +
+            (!owned ? '<span class="fw-tt-lock" aria-hidden="true"></span>' : "") +
+            "</button>";
+        }
+
+        if (!nodes.length) {
+          html += '<div class="fw-tt-empty">Tier ' + techViewTier + " · sin nodos todavía</div>";
+        }
+
+        html += "</div></div>"; // world + viewport
+
+        // Detail strip
+        const sel = techSel ? findTechNode(techSel) : null;
+        html += '<div class="fw-tt-dock">';
+        html += '<div class="fw-tt-dock-tier">' + (meta ? meta.label : ("Tier " + techViewTier)) + "</div>";
+        if (sel && (sel.wb | 0) === techViewTier) {
+          const owned = unlockedNodes.has(sel.id) || hasBp(sel.unlocks);
+          const depOk = nodeUnlocked(sel, unlockedNodes);
+          const canBuy = !owned && depOk && canBuyOnThisTier && scrapCount() >= sel.cost;
+          const recipe = RECIPES.find((r) => r.id === sel.unlocks);
+          const st = recipe ? recipeState(recipe) : null;
+          html += '<div class="fw-tt-dock-main">';
+          html += '<div class="fw-tt-dock-name">' + sel.label + "</div>";
+          html += '<div class="fw-tt-dock-sub">';
+          if (owned) {
+            html += "Plano aprendido";
+            if (recipe && st && !st.matsOk) html += " · faltan " + st.missing.join(", ");
+            else if (recipe && st && !st.wbOk) html += " · Mesa T" + recipe.wb + " para fabricar";
+          } else if (!depOk) html += "Bloqueado · desbloquea el anterior en la rama";
+          else if (!canBuyOnThisTier) html += "Requiere Workbench T" + techViewTier;
+          else html += sel.cost + " scrap para desbloquear";
+          html += "</div></div>";
+          if (!owned) {
+            html +=
+              '<button type="button" class="fw-tt-unlock" data-tt-buy="' + sel.id + '"' +
+              (!canBuy ? " disabled" : "") + ">Desbloquear · " + sel.cost + " scrap</button>";
+          } else if (recipe) {
+            html +=
+              '<button type="button" class="fw-tt-unlock is-craft" data-tt-craft="' + recipe.id + '"' +
+              (!(st && st.can) ? " disabled" : "") + ">Fabricar</button>";
+          }
+        } else {
+          html += '<div class="fw-tt-dock-main"><div class="fw-tt-dock-name">' +
+            (meta ? meta.blurb : "") +
+            '</div><div class="fw-tt-dock-sub">Selecciona un ítem · progresión lineal por rama · sin saltos</div></div>';
+        }
+        html += "</div></div>"; // dock + fw-tt
+
         body.innerHTML = html;
-        body.querySelectorAll("[data-tech]").forEach((btn) => {
+        root.classList.add("is-tech-view");
+
+        const viewport = body.querySelector("#fw-tt-viewport");
+        const world = body.querySelector("#fw-tt-world");
+
+        function applyCam() {
+          if (!world) return;
+          world.style.transform =
+            "translate(" + techCam.x + "px," + techCam.y + "px) scale(" + techCam.z + ")";
+        }
+
+        if (viewport) {
+          viewport.addEventListener("pointerdown", (ev) => {
+            if (ev.button !== 0) return;
+            if (ev.target.closest && ev.target.closest(".fw-tt-node")) return;
+            techCam.dragging = true;
+            techCam.lx = ev.clientX;
+            techCam.ly = ev.clientY;
+            try { viewport.setPointerCapture(ev.pointerId); } catch (_) {}
+          });
+          viewport.addEventListener("pointermove", (ev) => {
+            if (!techCam.dragging) return;
+            const dx = ev.clientX - techCam.lx;
+            const dy = ev.clientY - techCam.ly;
+            techCam.lx = ev.clientX;
+            techCam.ly = ev.clientY;
+            techCam.x += dx;
+            techCam.y += dy;
+            applyCam();
+          });
+          const endDrag = (ev) => {
+            techCam.dragging = false;
+            try { viewport.releasePointerCapture(ev.pointerId); } catch (_) {}
+          };
+          viewport.addEventListener("pointerup", endDrag);
+          viewport.addEventListener("pointercancel", endDrag);
+          viewport.addEventListener("wheel", (ev) => {
+            ev.preventDefault();
+            const rect = viewport.getBoundingClientRect();
+            const mx = ev.clientX - rect.left;
+            const my = ev.clientY - rect.top;
+            const prev = techCam.z;
+            const next = Math.max(0.45, Math.min(1.85, prev * (ev.deltaY < 0 ? 1.1 : 0.9)));
+            // Zoom toward cursor
+            techCam.x = mx - (mx - techCam.x) * (next / prev);
+            techCam.y = my - (my - techCam.y) * (next / prev);
+            techCam.z = next;
+            applyCam();
+          }, { passive: false });
+        }
+
+        body.querySelectorAll("[data-tt-tier]").forEach((btn) => {
           btn.addEventListener("click", () => {
-            const n = findTechNode(btn.getAttribute("data-tech"));
-            if (!n) return;
-            const owned = unlockedNodes.has(n.id) || hasBp(n.unlocks);
-            if (owned) {
-              const r = RECIPES.find((x) => x.id === n.unlocks);
-              if (r) craftRecipe(r);
-              return;
+            const t = Number(btn.getAttribute("data-tt-tier")) | 0;
+            if (t >= 1 && t <= 3) {
+              techViewTier = t;
+              techSel = null;
+              techCam.seeded = false;
+              paint();
             }
-            buyTech(n);
           });
         });
+
+        body.querySelectorAll("[data-tech]").forEach((btn) => {
+          btn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            const id = btn.getAttribute("data-tech");
+            techSel = id;
+            paint();
+          });
+        });
+
+        const buyBtn = body.querySelector("[data-tt-buy]");
+        if (buyBtn) {
+          buyBtn.addEventListener("click", () => {
+            const n = findTechNode(buyBtn.getAttribute("data-tt-buy"));
+            if (n) buyTech(n);
+          });
+        }
+        const craftBtn = body.querySelector("[data-tt-craft]");
+        if (craftBtn) {
+          craftBtn.addEventListener("click", () => {
+            const r = RECIPES.find((x) => x.id === craftBtn.getAttribute("data-tt-craft"));
+            if (r) craftRecipe(r);
+          });
+        }
+
         bindRmbTips(body);
-        foot.textContent = "LMB: comprar plano / fabricar si ya aprendido · RMB detalle";
+        foot.textContent = "Tech Tree T" + techViewTier +
+          " · paga scrap en orden · investigación en mesa aparte sigue disponible";
       }
 
       function paintResearch() {
@@ -756,6 +966,7 @@
 
       function paint() {
         syncChrome();
+        if (tab !== "tech") root.classList.remove("is-tech-view");
         const wb = getWb();
         if (wbEl) {
           const on = (uiMode === "research" && tableForced) || techTreeReady() || wb.inRange;
@@ -776,6 +987,7 @@
       function openUi(opts) {
         opts = opts || {};
         uiMode = opts.mode || "craft";
+        fullMenu = !!opts.full || uiMode === "craft" || uiMode === "workbench";
         tableForced = !!opts.forced;
         if (opts.wbTier != null) forcedWbTier = Math.max(1, opts.wbTier | 0);
         else if (tableForced && uiMode === "workbench") {
@@ -786,14 +998,20 @@
         else if (uiMode === "workbench") tab = "tech";
         else if (uiMode === "research") tab = "research";
         else tab = "quick";
+        if (uiMode === "workbench") {
+          techViewTier = Math.max(1, Math.min(3, forcedWbTier | 0));
+          techCam.seeded = false;
+          techSel = null;
+        }
         researchPick = null;
         hideTip();
         open = true;
         root.classList.add("is-open");
+        root.classList.toggle("is-full", !!fullMenu);
         root.setAttribute("aria-hidden", "false");
         paint();
         const msg = uiMode === "workbench"
-          ? "Mesa de trabajo · Tech Tree + craft · Tab cierra"
+          ? "Mesa T" + effectiveWbTier() + " · Tech Tree · Tab cierra"
           : (uiMode === "research"
             ? "Investigación · sacrifica objeto + scrap · Tab cierra"
             : "Fabricación · Q / Tab cierra");
@@ -803,8 +1021,13 @@
       function closeUi() {
         open = false;
         tableForced = false;
+        fullMenu = false;
+        craftSel = null;
+        techSel = null;
         hideTip();
         root.classList.remove("is-open");
+        root.classList.remove("is-full");
+        root.classList.remove("is-tech-view");
         root.setAttribute("aria-hidden", "true");
         onHud({ status: "UI cerrada" });
       }
@@ -818,10 +1041,10 @@
       onChange(Array.from(unlocked));
 
       return {
-        open: () => openUi({ mode: "craft", tab: "quick" }),
-        openCraft: () => openUi({ mode: "craft", tab: "quick" }),
+        open: () => openUi({ mode: "craft", tab: "quick", full: true }),
+        openCraft: () => openUi({ mode: "craft", tab: "quick", full: true }),
         openWorkbench: (tier) => openUi({
-          mode: "workbench", tab: "quick", forced: true,
+          mode: "workbench", tab: "tech", forced: true, full: true,
           wbTier: tier != null ? tier : undefined,
         }),
         openResearch: () => openUi({ mode: "research", tab: "research", forced: true }),
@@ -834,6 +1057,25 @@
         isTableUi: () => open && (uiMode === "workbench" || uiMode === "research"),
         getMode: () => uiMode,
         paint,
+        craftById: (id) => {
+          const recipe = RECIPES.find((r) => r.id === id);
+          return recipe ? craftRecipe(recipe) : false;
+        },
+        getQuickRecipes: () => RECIPES
+          .filter((r) => r.kind === "quick")
+          .map((r) => {
+            const st = recipeState(r);
+            return {
+              id: r.id,
+              label: r.label,
+              qty: r.qty,
+              costs: r.costs.map((c) => ({ id: c.id, qty: c.qty })),
+              can: st.can,
+              bpOk: st.bpOk,
+              wbOk: st.wbOk,
+              matsOk: st.matsOk,
+            };
+          }),
         hasBlueprint: hasBp,
         getUnlocked: () => Array.from(unlocked),
         destroy() {

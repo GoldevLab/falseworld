@@ -1,4 +1,4 @@
-/** False World inventory — backpack 24 + hotbar 6, stack 10000. Syncs to Resuma signals. */
+/** False World inventory v4 — Rust-style TAB inventory + quick craft. */
 (function () {
   const BACKPACK_N = 24;
   const HOTBAR_N = 6;
@@ -96,11 +96,29 @@
       root.id = "fw-inv-root";
       root.className = "fw-inv-root";
       root.innerHTML =
-        '<div class="fw-hotbar" id="fw-hotbar"></div>' +
+        '<div class="fw-hotbar" id="fw-hotbar" role="toolbar" aria-label="Cinturón 1 a 6"></div>' +
         '<div class="fw-bag" id="fw-bag" aria-hidden="true">' +
-        '  <div class="fw-bag-head"><span>MOCHILA</span><span class="fw-bag-hint">arrastra · Shift clic = mover</span><kbd>Tab</kbd></div>' +
-        '  <div class="fw-bag-inspect" id="fw-bag-inspect" hidden></div>' +
-        '  <div class="fw-bag-grid" id="fw-bag-grid"></div>' +
+        '  <div class="fw-inv-top"><button type="button" class="fw-crafting-btn" id="fw-crafting-btn">CRAFTING</button><button type="button" class="fw-inv-close" id="fw-inv-close" aria-label="Cerrar">×</button></div>' +
+        '  <div class="fw-rust-layout">' +
+        '    <section class="fw-player-pane" aria-label="Jugador">' +
+        '      <div class="fw-player-name">FALSE WORLD</div>' +
+        '      <div class="fw-player-body"><span class="fw-body-head"></span><span class="fw-body-torso"></span><span class="fw-body-legs"></span></div>' +
+        '      <div class="fw-gear fw-gear-left"><span></span><span></span><span></span></div>' +
+        '      <div class="fw-gear fw-gear-right"><span></span><span></span><span></span></div>' +
+        '      <div class="fw-player-stats"><span>100</span><span>100</span><span>100</span></div>' +
+        '    </section>' +
+        '    <section class="fw-storage-pane">' +
+        '      <div class="fw-bag-head"><span>INVENTORY</span><span class="fw-bag-hint">Arrastra al cinturón · Shift clic = mover</span></div>' +
+        '      <div class="fw-bag-inspect" id="fw-bag-inspect" hidden></div>' +
+        '      <div class="fw-bag-grid" id="fw-bag-grid"></div>' +
+        '    </section>' +
+        '    <section class="fw-quick-pane">' +
+        '      <div class="fw-quick-head">QUICK CRAFT</div>' +
+        '      <p class="fw-quick-copy">Puedes fabricar estos objetos con tus recursos actuales.</p>' +
+        '      <div class="fw-quick-grid" id="fw-quick-grid"></div>' +
+        '      <p class="fw-quick-empty" id="fw-quick-empty" hidden>No tienes recursos suficientes para fabricar nada.</p>' +
+        '    </section>' +
+        '  </div>' +
         "</div>" +
         '<div class="fw-held" id="fw-held"></div>' +
         '<div class="fw-drag-ghost" id="fw-drag-ghost" hidden></div>';
@@ -110,6 +128,10 @@
       const bagEl = root.querySelector("#fw-bag");
       const bagGrid = root.querySelector("#fw-bag-grid");
       const bagInspectEl = root.querySelector("#fw-bag-inspect");
+      const quickGrid = root.querySelector("#fw-quick-grid");
+      const quickEmpty = root.querySelector("#fw-quick-empty");
+      const craftingBtn = root.querySelector("#fw-crafting-btn");
+      const closeBtn = root.querySelector("#fw-inv-close");
       const heldEl = root.querySelector("#fw-held");
       ghostEl = root.querySelector("#fw-drag-ghost");
 
@@ -389,6 +411,53 @@
         });
       }
 
+      function progressionApi() {
+        try {
+          if (window.__fw && typeof window.__fw.ensureCraftUI === "function") {
+            return window.__fw.ensureCraftUI();
+          }
+          return window.__fw && window.__fw.progression;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function paintQuickCraft() {
+        if (!quickGrid) return;
+        const prog = progressionApi();
+        const recipes = prog && typeof prog.getQuickRecipes === "function"
+          ? prog.getQuickRecipes()
+          : [];
+        quickGrid.innerHTML = "";
+        let visible = 0;
+        for (let i = 0; i < recipes.length; i++) {
+          const r = recipes[i];
+          // Rust Quick Craft only presents items craftable from current resources.
+          if (!r.can) continue;
+          visible++;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "fw-quick-item";
+          btn.dataset.craft = r.id;
+          btn.title = r.label + " · " + r.costs.map((c) => c.qty + " " + c.id).join(" · ");
+          const url = iconUrl(r.id);
+          btn.innerHTML =
+            (url
+              ? '<img alt="" src="' + url + '" draggable="false">'
+              : '<span class="fw-slot-blob"></span>') +
+            '<span class="fw-quick-qty">+' + (r.qty || 1) + "</span>";
+          btn.addEventListener("click", () => {
+            const api = progressionApi();
+            if (api && typeof api.craftById === "function") {
+              api.craftById(r.id);
+              paint();
+            }
+          });
+          quickGrid.appendChild(btn);
+        }
+        if (quickEmpty) quickEmpty.hidden = visible > 0;
+      }
+
       function paint() {
         clearDropHover();
         hotbarEl.innerHTML = "";
@@ -415,6 +484,7 @@
         }
         bagEl.classList.toggle("is-open", bagOpen);
         bagEl.setAttribute("aria-hidden", bagOpen ? "false" : "true");
+        if (bagOpen) paintQuickCraft();
 
         // Inspect label for selected backpack item
         if (bagInspectEl) {
@@ -568,6 +638,26 @@
         if (!bagOpen) bagFocus = -1;
         paint();
         notifyBagUi();
+      }
+
+      function closeBag() {
+        if (!bagOpen) return;
+        bagOpen = false;
+        bagFocus = -1;
+        paint();
+        notifyBagUi();
+      }
+
+      if (closeBtn) closeBtn.addEventListener("click", closeBag);
+      if (craftingBtn) {
+        craftingBtn.addEventListener("click", () => {
+          closeBag();
+          try {
+            if (window.__fw && typeof window.__fw.openCraftUI === "function") {
+              window.__fw.openCraftUI();
+            }
+          } catch (_) {}
+        });
       }
 
       function setActive(i) {

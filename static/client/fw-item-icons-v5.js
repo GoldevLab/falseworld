@@ -1,4 +1,4 @@
-/** False World — Three.js baked inventory + build-piece icons (mini 3D renders). v5 tools+crates. */
+/** False World — Three.js baked inventory + exact 20 Rust twig icons. v8 */
 import * as THREE from "three";
 
 const SIZE = 160;
@@ -10,16 +10,33 @@ const ITEM_IDS = [
 ];
 /** Build radial piece ids — order independent; baked into same cache. */
 const BUILD_IDS = [
-  "foundation", "foundation_tri", "stairs", "stairs_l",
-  "floor", "floor_tri", "roof", "roof_tri",
-  "wall", "doorway", "window", "doorway_d",
-  "wall_half", "wall_low", "roof_corner", "roof_valley",
-  "ramp", "roof_wall", "door",
+  "foundation", "roof", "ramp", "stairs",
+  "floor", "floor_tri", "foundation_tri", "roof_tri", "roof_ridge",
+  "wall", "doorway", "window", "wall_frame", "floor_frame",
+  "wall_low", "wall_half", "pillar", "floor_steps", "stairs_l", "stairs_u",
 ];
 const IDS = ITEM_IDS.concat(BUILD_IDS);
 
+/** Fixed GLB/mesh-rendered PNGs — skip procedural mesh bake for these. */
+const STATIC_ICONS = {
+  hatchet_tool: "/icons/hatchet_tool.png?v=3",
+  rock_tool: "/icons/rock_tool.png?v=7",
+  hammer_tool: "/icons/hammer_tool.png?v=3",
+  tool_cupboard_item: "/icons/tool_cupboard_item.png?v=6",
+  workbench_1: "/icons/workbench_1.png?v=4",
+  workbench_2: "/icons/workbench_2.png?v=5",
+  workbench_3: "/icons/workbench_3.png?v=4",
+  box_large: "/icons/box_large.png?v=5",
+  box_small: "/icons/box_small.png?v=5",
+};
+
 const cache = Object.create(null);
+for (const id of Object.keys(STATIC_ICONS)) {
+  cache[id] = STATIC_ICONS[id];
+}
 let bakePromise = null;
+/** @type {THREE.Texture|null} */
+let blueprintMap = null;
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -165,63 +182,164 @@ function meshHammer() {
   return g;
 }
 
-function meshPlan() {
-  // Rust-style build plan: tan blueprint sheet + bold grid + glowing structure (reads at 64px)
-  const g = new THREE.Group();
-  const paper = mat(0xe8d0a0, { roughness: 0.72, flat: true });
-  const paperEdge = mat(0xc9a86a, { roughness: 0.78, flat: true });
-  const ink = mat(0x2a4a6a, { roughness: 0.5, flat: true });
-  const inkLite = mat(0x3a6a8a, { roughness: 0.45, flat: true, emissive: 0x1a3050, emissiveIntensity: 0.2 });
-  const ghost = mat(0x5ee8ff, {
-    roughness: 0.25, flat: true, emissive: 0x22a8cc, emissiveIntensity: 0.85,
-  });
-  const clip = mat(0x6a6a72, { roughness: 0.35, metalness: 0.85, flat: true });
+function makeBlueprintTexture() {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 384;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
 
-  // Main sheet — large, tilted toward camera
-  const sheet = new THREE.Group();
-  sheet.rotation.set(-0.42, 0.18, 0.06);
-  const board = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.06, 1.15), paper);
-  sheet.add(board);
-  const border = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.05, 1.22), paperEdge);
-  border.position.y = -0.04;
-  sheet.add(border);
+  // Soft drop shadow
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath();
+  ctx.ellipse(256, 330, 190, 28, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 
-  // Bold grid (fewer, thicker lines)
-  for (let i = -2; i <= 2; i++) {
-    const hx = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.03, 0.04), i === 0 ? ink : inkLite);
-    hx.position.set(0, 0.05, i * 0.22);
-    const hz = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 1.02), i === 0 ? ink : inkLite);
-    hz.position.set(i * 0.24, 0.05, 0);
-    sheet.add(hx, hz);
+  // Scroll outline (unrolled blueprint with side curls + torn top)
+  const pathScroll = () => {
+    ctx.beginPath();
+    // bottom edge (wider, slight curve)
+    ctx.moveTo(78, 300);
+    ctx.quadraticCurveTo(256, 318, 434, 300);
+    // right curl up
+    ctx.bezierCurveTo(468, 270, 470, 200, 448, 150);
+    ctx.bezierCurveTo(458, 120, 448, 88, 420, 78);
+    // top edge with V-tear + jagged nicks
+    ctx.lineTo(390, 72);
+    ctx.lineTo(372, 86);
+    ctx.lineTo(350, 70);
+    ctx.lineTo(320, 78);
+    ctx.lineTo(300, 68);
+    // V notch
+    ctx.lineTo(268, 74);
+    ctx.lineTo(256, 108);
+    ctx.lineTo(244, 74);
+    ctx.lineTo(210, 68);
+    ctx.lineTo(188, 80);
+    ctx.lineTo(160, 70);
+    ctx.lineTo(140, 84);
+    ctx.lineTo(118, 72);
+    ctx.lineTo(92, 80);
+    // left curl down
+    ctx.bezierCurveTo(64, 92, 54, 130, 64, 160);
+    ctx.bezierCurveTo(42, 210, 44, 270, 78, 300);
+    ctx.closePath();
+  };
+
+  // Fill body
+  const grad = ctx.createLinearGradient(80, 60, 430, 310);
+  grad.addColorStop(0, "#2458a8");
+  grad.addColorStop(0.35, "#1a4a96");
+  grad.addColorStop(0.55, "#163d82");
+  grad.addColorStop(0.75, "#1e56a4");
+  grad.addColorStop(1, "#1a458c");
+  pathScroll();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Inner trough shadow (center darker)
+  ctx.save();
+  pathScroll();
+  ctx.clip();
+  const trough = ctx.createLinearGradient(80, 0, 430, 0);
+  trough.addColorStop(0, "rgba(255,255,255,0.14)");
+  trough.addColorStop(0.18, "rgba(0,0,0,0)");
+  trough.addColorStop(0.5, "rgba(0,0,0,0.28)");
+  trough.addColorStop(0.82, "rgba(0,0,0,0)");
+  trough.addColorStop(1, "rgba(255,255,255,0.16)");
+  ctx.fillStyle = trough;
+  ctx.fillRect(0, 0, 512, 384);
+
+  // Blueprint grid
+  ctx.strokeStyle = "rgba(170, 210, 255, 0.55)";
+  ctx.lineWidth = 1.6;
+  for (let x = 100; x <= 410; x += 22) {
+    ctx.beginPath();
+    ctx.moveTo(x, 90);
+    ctx.lineTo(x + (x - 256) * 0.04, 300);
+    ctx.stroke();
   }
+  for (let y = 100; y <= 290; y += 22) {
+    ctx.beginPath();
+    ctx.moveTo(90, y);
+    ctx.lineTo(420, y + Math.sin((y - 100) * 0.04) * 4);
+    ctx.stroke();
+  }
+  // Bold center lines
+  ctx.strokeStyle = "rgba(210, 235, 255, 0.85)";
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(256, 95);
+  ctx.lineTo(256, 300);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(105, 195);
+  ctx.lineTo(405, 195);
+  ctx.stroke();
 
-  // Chunky hologram base + walls (clear build silhouette)
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.1, 0.55), ghost);
-  floor.position.set(0, 0.12, 0.02);
-  const wallN = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.38, 0.08), ghost);
-  wallN.position.set(0, 0.3, -0.22);
-  const wallE = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.38, 0.42), ghost);
-  wallE.position.set(0.22, 0.3, 0.02);
-  const doorGhost = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.06), mat(0xffffff, {
-    roughness: 0.2, flat: true, emissive: 0x88eeff, emissiveIntensity: 0.95,
-  }));
-  doorGhost.position.set(-0.08, 0.24, -0.2);
-  sheet.add(floor, wallN, wallE, doorGhost);
+  // Curl ridge highlights
+  ctx.strokeStyle = "rgba(160, 205, 255, 0.7)";
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(88, 140);
+  ctx.bezierCurveTo(70, 180, 72, 240, 95, 285);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(424, 140);
+  ctx.bezierCurveTo(448, 180, 446, 240, 418, 285);
+  ctx.stroke();
 
-  // Metal clip at top
-  const clipBar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.14), clip);
-  clipBar.position.set(0, 0.08, -0.48);
-  sheet.add(clipBar);
+  // Tiny structure sketch (reads as "build plan")
+  ctx.strokeStyle = "rgba(120, 220, 255, 0.9)";
+  ctx.lineWidth = 2.2;
+  ctx.strokeRect(210, 150, 90, 70);
+  ctx.beginPath();
+  ctx.moveTo(210, 150);
+  ctx.lineTo(255, 118);
+  ctx.lineTo(300, 150);
+  ctx.stroke();
+  ctx.strokeRect(236, 185, 22, 35);
+  ctx.restore();
 
-  // Rolled corner (single readable curl)
-  const curl = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.1, 12, 1, false, 0, Math.PI * 0.55), paperEdge);
-  curl.rotation.set(0, 0, Math.PI * 0.5);
-  curl.position.set(0.62, 0.02, 0.38);
-  sheet.add(curl);
+  // Dark outline for silhouette in slot
+  pathScroll();
+  ctx.strokeStyle = "rgba(8, 28, 70, 0.95)";
+  ctx.lineWidth = 7;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+  pathScroll();
+  ctx.strokeStyle = "rgba(60, 120, 200, 0.55)";
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
 
-  g.add(sheet);
-  g.rotation.set(0.08, -0.12, 0);
-  g.scale.setScalar(0.95);
+  const tex = new THREE.CanvasTexture(c);
+  if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function meshPlan() {
+  // Face-on blueprint card — uses /icons/build_plan.png when loaded, else canvas art
+  const g = new THREE.Group();
+  const map = blueprintMap || makeBlueprintTexture();
+  const paper = new THREE.MeshBasicMaterial({
+    map,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const aspect = map.image && map.image.width && map.image.height
+    ? map.image.width / map.image.height
+    : 1.35;
+  const h = 1.15;
+  const w = h * aspect;
+  const card = new THREE.Mesh(new THREE.PlaneGeometry(w, h), paper);
+  card.rotation.set(-0.12, 0.16, -0.06);
+  g.add(card);
+  g.scale.setScalar(1.08);
   return g;
 }
 
@@ -740,6 +858,26 @@ function meshStairsL() {
   return g;
 }
 
+function meshStairsU() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("ramp");
+  for (let i = 0; i < 4; i++) {
+    addBox(g, 0.48, 0.11, 0.25, plank, -0.3, -0.42 + i * 0.17, 0.42 - i * 0.25);
+    addBox(g, 0.48, 0.11, 0.25, dark, 0.3, 0.1 + i * 0.17, -0.34 + i * 0.25);
+  }
+  addBox(g, 1.1, 0.1, 0.32, dark, 0, 0.04, -0.42);
+  return g;
+}
+
+function meshFloorSteps() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("ramp");
+  for (let i = 0; i < 3; i++) {
+    addBox(g, 1.2, 0.12 + i * 0.12, 0.38, i === 1 ? dark : plank, 0, -0.28 + i * 0.06, 0.38 - i * 0.38);
+  }
+  return g;
+}
+
 function meshFloor() {
   const g = new THREE.Group();
   const { plank, dark } = woodMats("floor");
@@ -747,6 +885,16 @@ function meshFloor() {
   addBox(g, 1.35, 0.04, 0.08, dark, 0, 0.06, -0.42);
   addBox(g, 1.35, 0.04, 0.08, dark, 0, 0.06, 0);
   addBox(g, 1.35, 0.04, 0.08, dark, 0, 0.06, 0.42);
+  return g;
+}
+
+function meshFloorFrame() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("floor");
+  addBox(g, 1.4, 0.12, 0.24, plank, 0, 0, -0.58);
+  addBox(g, 1.4, 0.12, 0.24, plank, 0, 0, 0.58);
+  addBox(g, 0.24, 0.12, 0.92, dark, -0.58, 0, 0);
+  addBox(g, 0.24, 0.12, 0.92, dark, 0.58, 0, 0);
   return g;
 }
 
@@ -790,6 +938,15 @@ function meshRoofTri() {
   return g;
 }
 
+function meshRoofRidge() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("roof");
+  addBox(g, 1.4, 0.1, 0.82, plank, 0, 0.12, -0.3, -0.48, 0, 0);
+  addBox(g, 1.4, 0.1, 0.82, plank, 0, 0.12, 0.3, 0.48, 0, 0);
+  addBox(g, 1.42, 0.1, 0.12, dark, 0, 0.42, 0);
+  return g;
+}
+
 function meshWall(h) {
   const g = new THREE.Group();
   const { plank, dark } = woodMats("wall");
@@ -816,6 +973,25 @@ function meshDoorway(wide) {
   // sill
   addBox(g, gap + 0.08, 0.08, 0.16, dark, 0, -0.58, 0.02);
   if (wide) addBox(g, 0.06, 0.95, 0.1, dark, 0, -0.1, 0.02);
+  return g;
+}
+
+function meshWallFrame() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("wall");
+  addBox(g, 0.16, 1.3, 0.14, plank, -0.62, 0, 0);
+  addBox(g, 0.16, 1.3, 0.14, plank, 0.62, 0, 0);
+  addBox(g, 1.4, 0.16, 0.14, dark, 0, 0.57, 0);
+  addBox(g, 1.4, 0.12, 0.14, dark, 0, -0.59, 0);
+  return g;
+}
+
+function meshPillar() {
+  const g = new THREE.Group();
+  const { plank, dark } = woodMats("wall");
+  addBox(g, 0.22, 1.45, 0.22, plank, 0, 0, 0);
+  addBox(g, 0.36, 0.14, 0.36, dark, 0, 0.66, 0);
+  addBox(g, 0.34, 0.14, 0.34, dark, 0, -0.66, 0);
   return g;
 }
 
@@ -925,14 +1101,20 @@ function buildMesh(id) {
     case "foundation_tri": return meshFoundationTri();
     case "stairs": return meshStairs();
     case "stairs_l": return meshStairsL();
+    case "stairs_u": return meshStairsU();
+    case "floor_steps": return meshFloorSteps();
     case "floor": return meshFloor();
     case "floor_tri": return meshFloorTri();
+    case "floor_frame": return meshFloorFrame();
     case "roof": return meshRoof();
     case "roof_tri": return meshRoofTri();
+    case "roof_ridge": return meshRoofRidge();
     case "wall": return meshWall(1.25);
     case "wall_half": return meshWall(0.72);
     case "wall_low": return meshWall(0.42);
+    case "pillar": return meshPillar();
     case "doorway": return meshDoorway(false);
+    case "wall_frame": return meshWallFrame();
     case "doorway_d": return meshDoorway(true);
     case "window": return meshWindow();
     case "roof_corner": return meshRoofCorner();
@@ -960,12 +1142,26 @@ function fitCameraToObject(camera, object, offset = 1.55) {
 
 /** Tighter framing for small-slot readability */
 const ICON_ZOOM = {
-  build_plan: 1.28,
+  build_plan: 1.45,
   key_lock: 1.32,
 };
 
-function bakeAll() {
-  if (typeof document === "undefined") return Promise.resolve(cache);
+async function bakeAll() {
+  if (typeof document === "undefined") return cache;
+
+  if (!blueprintMap) {
+    try {
+      const tex = await new THREE.TextureLoader().loadAsync("/icons/build_plan.png");
+      if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      tex.needsUpdate = true;
+      blueprintMap = tex;
+    } catch (err) {
+      console.warn("[FW icons] build_plan.png", err);
+      blueprintMap = null;
+    }
+  }
+
 
   const canvas = document.createElement("canvas");
   canvas.width = SIZE;
@@ -998,6 +1194,7 @@ function bakeAll() {
 
   for (let i = 0; i < IDS.length; i++) {
     const id = IDS[i];
+    if (STATIC_ICONS[id]) continue;
     try {
       const mesh = buildMesh(id);
       scene.add(mesh);
@@ -1012,7 +1209,7 @@ function bakeAll() {
   }
 
   renderer.dispose();
-  return Promise.resolve(cache);
+  return cache;
 }
 
 const api = {

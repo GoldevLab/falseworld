@@ -1,6 +1,6 @@
 /** False World explosives — raid damage tables (mirrors src/explosives.rs). */
 (function () {
-  const WALL_HP = [10, 250, 500, 1000, 2000];
+  const WALL_HP = [50, 250, 500, 1000, 2000];
   const SATCHEL_N = [1, 3, 10, 23, 46];
   const ROCKET_N = [1, 2, 4, 8, 15];
   const C4_N = [1, 1, 2, 4, 8];

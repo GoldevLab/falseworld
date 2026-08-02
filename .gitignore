@@ -11,8 +11,18 @@ public/avatars/*.vrm
 !public/avatars/sophia.vrm
 public/animaciones/*.fbx
 !public/animaciones/StandingIdle.fbx
+!public/animaciones/Idle.fbx
 !public/animaciones/Walking.fbx
 !public/animaciones/FastRun.fbx
+!public/animaciones/CrouchSneakRight.fbx
+!public/animaciones/CrouchToSprint.fbx
+!public/animaciones/Gather.fbx
+!public/animaciones/StandingMeleeAttackHorizontal.fbx
+!public/animaciones/StrafeRunLeft.fbx
+!public/animaciones/StrafeRunRight.fbx
+!public/animaciones/StrafeWalkLeft.fbx
+!public/animaciones/StrafeWalkRight.fbx
 # Optional: large local vendor (can re-copy from vrmedia node_modules)
 # public/vendor/
 .resuma/
+data/

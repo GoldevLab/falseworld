@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 /// Wall max HP by build tier (twig → armored).
-pub const WALL_HP: [i32; 5] = [10, 250, 500, 1000, 2000];
+pub const WALL_HP: [i32; 5] = [50, 250, 500, 1000, 2000];
 
 /// Units needed to destroy a wall on the **hard** side.
 pub const SATCHEL_TO_DESTROY: [i32; 5] = [1, 3, 10, 23, 46];

@@ -8,6 +8,7 @@ mod explosives;
 mod inventory;
 mod multiplayer;
 mod pages;
+mod tool_transforms;
 mod workers;
 
 const CSS: &str = concat!(
@@ -112,6 +113,8 @@ async fn main() -> std::io::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| manifest.join("src/pages"));
 
+    tool_transforms::init(&public_dir);
+
     FlowApp::new()
         .with_title("False World — Resuma meadow + VRM")
         .with_description(
@@ -119,21 +122,22 @@ async fn main() -> std::io::Result<()> {
         )
         .with_head(CSS)
         .route("/_fw/mp/ws", multiplayer::ws_route())
+        .route("/_fw/tool-transforms", tool_transforms::route())
         // New ids bust Resuma's year-long immutable client cache
         .client_asset(
-            "fw-item-icons-v5",
+            "fw-item-icons-v9",
             include_bytes!("../static/client/fw-item-icons-v5.js"),
         )
         .client_asset(
-            "fw-inventory-v3",
+            "fw-inventory-v4",
             include_bytes!("../static/client/fw-inventory-v3.js"),
         )
         .client_asset(
-            "fw-explosives-v1",
+            "fw-explosives-v2",
             include_bytes!("../static/client/fw-explosives-v1.js"),
         )
         .client_asset(
-            "fw-progression-v1",
+            "fw-progression-v4",
             include_bytes!("../static/client/fw-progression-v1.js"),
         )
         .client_asset(
@@ -141,11 +145,11 @@ async fn main() -> std::io::Result<()> {
             include_bytes!("../static/client/fw-multiplayer-v1.js"),
         )
         .client_asset(
-            "fw-meadow-gpu-v217",
+            "fw-meadow-gpu-v224",
             include_bytes!("../static/client/fw-meadow-gpu-v217.js"),
         )
         .client_asset(
-            "fw-meadow-vrm-v42",
+            "fw-meadow-vrm-v55",
             include_bytes!("../static/client/fw-meadow-vrm-v42.js"),
         )
         .with_public_dir(public_dir)

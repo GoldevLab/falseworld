@@ -438,22 +438,22 @@ pub fn page(_req: FlowRequest) -> View {
         <div class="stage" data-unlocked={unlocked}>
             <div class="viewport">
                 {client_component(
-                    ClientComponent::new("fw-item-icons-v5")
+                    ClientComponent::new("fw-item-icons-v9")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-inventory-v3")
+                    ClientComponent::new("fw-inventory-v4")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-explosives-v1")
+                    ClientComponent::new("fw-explosives-v2")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-progression-v1")
+                    ClientComponent::new("fw-progression-v4")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
@@ -463,12 +463,12 @@ pub fn page(_req: FlowRequest) -> View {
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-gpu-v217")
+                    ClientComponent::new("fw-meadow-gpu-v224")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-vrm-v42")
+                    ClientComponent::new("fw-meadow-vrm-v55")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
