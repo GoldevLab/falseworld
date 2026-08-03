@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout falseworld
+        uses: actions/checkout@v4
+        with:
+          path: falseworld
+
+      # Path dependency: resuma = { path = "../resuma/crates/resuma" }
+      - name: Checkout resuma
+        uses: actions/checkout@v4
+        with:
+          repository: GoldevLab/resuma
+          ref: v1.2.16
+          path: resuma
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: falseworld
+
+      # falseworld-wgpu (winit/wgpu) needs native windowing headers to build on Linux.
+      - name: Install native windowing deps (winit/wgpu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev pkg-config
+
+      - name: Verify essential VRM / Mixamo assets
+        working-directory: falseworld
+        run: node scripts/check-essential-assets.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # `static/client/*.js` are committed build outputs of
+      # `static/client/src/*/entry.js` (see README "Cliente WebGPU"); this
+      # catches source/bundle drift (someone edited the bundle by hand, or
+      # forgot to rerun the build) before it reaches `include_bytes!`.
+      - name: Verify client bundle is up to date
+        working-directory: falseworld
+        run: |
+          npm install
+          npm run build:client
+          git diff --exit-code -- static/client/*.js
+
+      - name: Check workspace
+        working-directory: falseworld
+        run: cargo check --workspace
+
+      - name: Test workspace
+        working-directory: falseworld
+        run: cargo test --workspace
+
+      # Rust `biome.rs::coast_radius`/`island_edge` is hand-duplicated in
+      # `entry.js`/WGSL (shaders can't call into this crate); this catches
+      # the two drifting apart — see ROADMAP.md "Evitar divergencia Rust ↔
+      # WGSL/JS" and the header comment in check-noise-parity.mjs.
+      - name: Check Rust/JS coastline noise parity
+        working-directory: falseworld
+        run: npm run check:noise-parity
+
+      - name: Build workspace (release)
+        working-directory: falseworld
+        run: cargo build --workspace --release

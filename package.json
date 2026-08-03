@@ -1,10 +1,13 @@
 {
   "name": "falseworld",
   "version": "1.0.0",
-  "description": "Inicio de un juego de superficie (pradera procedural): **workers Resuma** cuecen terreno FBM + hierba empaquetada; el **browser WebGPU** (o el binario nativo **wgpu 30**) lo pinta. Inspirado en [False Earth](https://github.com/momentchan/false-earth) de Ming-Jyun Hung — grid snap, blades 64 B, cámaras Follow/FPV/Orbit. Código propio; no es un port de Three/TSL. asdasdasda ## Stack",
+  "description": "False World — Resuma + WebGPU procedural meadow, juego de supervivencia estilo Rust.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:client": "node scripts/build-client.mjs",
+    "watch:client": "node scripts/build-client.mjs --watch",
+    "check:noise-parity": "node scripts/check-noise-parity.mjs"
   },
   "repository": {
     "type": "git",
@@ -16,5 +19,8 @@
   "bugs": {
     "url": "https://github.com/GoldevLab/falseworld/issues"
   },
-  "homepage": "https://github.com/GoldevLab/falseworld#readme"
+  "homepage": "https://github.com/GoldevLab/falseworld#readme",
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
 }

@@ -16,9 +16,11 @@ const JOBS = [
   { id: "workbench_1", mesh: "props/workbench_t1_mesh.json", yaw: 0.85, pitch: 0.48, exposure: 1.6 },
   { id: "workbench_2", mesh: "props/workbench_t2_mesh.json", yaw: 0.85 + Math.PI, pitch: 0.48, exposure: 1.85 },
   { id: "workbench_3", mesh: "props/workbench_t3_mesh.json", yaw: 0.85, pitch: 0.48, exposure: 2.15 },
-  { id: "box_large", mesh: "props/old_chest_mesh.json", yaw: 0.95, pitch: 0.42, scale: 1, exposure: 1.7 },
-  { id: "box_small", mesh: "props/old_chest_mesh.json", yaw: 0.95, pitch: 0.42, scale: 0.72, exposure: 1.7 },
+  // Same fixed world frame so small reads smaller than large (auto-fit was identical).
+  { id: "box_large", mesh: "props/old_chest_mesh.json", yaw: 0.55, pitch: 0.38, scale: 1, exposure: 1.75, fixedSpan: 1.55 },
+  { id: "box_small", mesh: "props/old_chest_mesh.json", yaw: 1.35, pitch: 0.52, scale: 0.62, exposure: 1.85, fixedSpan: 1.55 },
   { id: "tool_cupboard_item", mesh: "props/wardrobe_tc_mesh.json", yaw: 0.7, pitch: 0.22, exposure: 1.5 },
+  { id: "research_table", mesh: "props/research_table_mesh.json", yaw: 0.9, pitch: 0.42, exposure: 1.7 },
 ];
 
 function loadMesh(rel) {
@@ -64,7 +66,8 @@ function rasterizeHi(mesh, opts) {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
   }
 
-  const span = Math.max(1e-6, Math.max(maxX - minX, maxY - minY));
+  const autoSpan = Math.max(1e-6, Math.max(maxX - minX, maxY - minY));
+  const span = opts.fixedSpan != null ? Math.max(autoSpan, opts.fixedSpan) : autoSpan;
   const fit = (HI * (1 - 2 * PAD)) / span;
   const midX = (minX + maxX) * 0.5;
   const midY = (minY + maxY) * 0.5;

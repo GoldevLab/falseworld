@@ -1,5 +1,8 @@
-//! Explosive raid tables (Rust-aligned MVP) — shared truth for docs / future server auth.
-//! Client mirrors these in `fw-explosives-v1.js` for WebGPU simulation.
+//! Explosive raid tables (Rust-aligned MVP) — single source of truth for
+//! both raid math paths: `fw-explosives.js` mirrors these constants for
+//! instant client-side prediction, and `multiplayer.rs::explosive_hard_damage`
+//! calls the same `*_damage_hard` functions server-side to settle the
+//! authoritative HP once an `explode` message arrives (see `ws` handler).
 
 #![allow(dead_code)]
 

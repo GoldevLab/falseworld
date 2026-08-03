@@ -2,7 +2,7 @@
 
 use falseworld_core::{decode_chunk, encode_chunk, generate_chunk, ChunkRequest, SurfaceChunk, CONTENT_TYPE};
 use resuma::prelude::*;
-use resuma::{worker, FlowEngine, GraphId, WorkerContext, WorkerEvent};
+use resuma::{worker, FlowEngine, GraphId, WorkerContext};
 use resuma::exec::GraphStatus;
 use serde_json::{json, Value};
 
@@ -61,7 +61,7 @@ pub fn claim_chunk(graph_id: &str) -> Result<SurfaceChunk> {
             return Err(ResumaError::Validation(format!("not done ({other:?})")));
         }
     }
-    let artifact_id = last_artifact_id(&gid)
+    let artifact_id = FlowEngine::last_artifact(&gid)
         .ok_or_else(|| ResumaError::Validation("no artifact".into()))?;
     let (bytes, ctype, _) = resuma::artifact_get(&artifact_id)
         .ok_or_else(|| ResumaError::Validation("artifact missing".into()))?;
@@ -71,15 +71,4 @@ pub fn claim_chunk(graph_id: &str) -> Result<SurfaceChunk> {
         serde_json::from_slice(bytes.as_ref())
             .map_err(|e| ResumaError::Validation(format!("json: {e}")))
     }
-}
-
-fn last_artifact_id(gid: &GraphId) -> Option<String> {
-    let events = FlowEngine::replay(gid)?;
-    events.into_iter().rev().find_map(|e| match e {
-        WorkerEvent::Result { data, .. } => data
-            .get("artifact_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        _ => None,
-    })
 }

@@ -1,5 +1,11 @@
 //! Inventario False World — mochila (24) + hotbar (6), stack 10000.
-//! El estado vivo corre en señales Resuma (JSON) + cliente `fw-inventory-v2`.
+//! El estado vivo corre en señales Resuma (JSON) + cliente `fw-inventory` (id estable,
+//! cache-busted por hash de contenido — ver `resuma::client::client_asset`).
+//!
+//! `starter_backpack_json` / `starter_hotbar_json` solo sirven de "regalo de
+//! bienvenida" renderizado en el SSR mirror; jugadores que ya guardaron una
+//! partida reciben su inventario real desde `crate::player_inventory` (fetch
+//! async antes de montar la UI — ver `pages/index.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +59,6 @@ pub const ITEMS: &[ItemDef] = &[
     ItemDef { id: "box_large", label: "Caja grande", stack_size: 5, kind: "placeable" },
 ];
 
-#[allow(dead_code)]
 pub fn item_def(id: &str) -> Option<&'static ItemDef> {
     ITEMS.iter().find(|i| i.id == id)
 }

@@ -26,6 +26,8 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const POSE_MIN_INTERVAL_MS: u128 = 30;
 const PLACE_MIN_INTERVAL_MS: u128 = 50;
 const REMOVE_MIN_INTERVAL_MS: u128 = 100;
+const EXPLODE_MIN_INTERVAL_MS: u128 = 150;
+const MAX_EXPLODE_HITS: usize = 48;
 const SYNC_MIN_INTERVAL_MS: u128 = 1_000;
 /// Must tolerate a background browser tab: Chrome throttles timers heavily, so
 /// pose heartbeats can pause for tens of seconds while the WebSocket stays open.
@@ -51,6 +53,7 @@ struct PeerLive {
     last_pose: Instant,
     last_place: Instant,
     last_remove: Instant,
+    last_explode: Instant,
     last_sync: Instant,
     last_seen: Instant,
     /// False until the client sends its first pose — keeps loading/zombie
@@ -205,6 +208,77 @@ fn sanitized_auth(value: Option<&Value>, owner_id: &str) -> Value {
     Value::Array(ids.into_iter().map(Value::String).collect())
 }
 
+/// Authoritative per-hit damage for an `explode` message. Mirrors the client
+/// prediction in `fw-meadow-gpu.js::applyExplosion` minus the blast-radius
+/// falloff multiplier (the client already filtered `hits` to pieces inside
+/// the blast/splash radius; the server only needs to settle the *amount*).
+fn explosive_hard_damage(kind: &str, tier: usize) -> f32 {
+    match kind {
+        "rocket" => crate::explosives::rocket_damage_hard(tier),
+        "c4" => crate::explosives::c4_damage_hard(tier),
+        _ => crate::explosives::satchel_damage_hard(tier),
+    }
+}
+
+/// Whether `peer_id` may remove/damage-authorize actions on `piece`: the
+/// owner, or (for `toolcupboard`/`door`) anyone listed in its `auth` list —
+/// e.g. a teammate added to the same TC. Prevents the old "anyone within 10m"
+/// rule from letting strangers grief pieces they don't own or share.
+fn is_authorized_on_piece(piece: &Value, peer_id: &str) -> bool {
+    let owner = piece.get("ownerId").and_then(Value::as_str).unwrap_or("");
+    if owner == peer_id {
+        return true;
+    }
+    piece
+        .get("auth")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().any(|v| v.as_str() == Some(peer_id)))
+        .unwrap_or(false)
+}
+
+/// Validates box/campfire/workbench `slots` (`[{id,qty}|null, ...]`) against
+/// the item catalog: unknown ids are dropped, quantities clamped to
+/// `stack_size`. Same threat model as `player_inventory::sanitize_slots` —
+/// a tampered client must not be able to smuggle invalid/infinite items into
+/// a piece that other players can see or loot.
+fn sanitize_item_slots(raw: &Value, max_len: usize) -> Value {
+    let Some(arr) = raw.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    let out: Vec<Value> = arr
+        .iter()
+        .take(max_len)
+        .map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str);
+            let qty = entry.get("qty").and_then(Value::as_i64);
+            match (id.and_then(crate::inventory::item_def), qty) {
+                (Some(def), Some(qty)) if qty > 0 => {
+                    json!({ "id": id.unwrap(), "qty": qty.clamp(1, def.stack_size as i64) })
+                }
+                _ => Value::Null,
+            }
+        })
+        .collect();
+    Value::Array(out)
+}
+
+/// Validates a toolcupboard `inv` upkeep counter (`{wood,stone,metal,hq}`),
+/// clamping each known resource and dropping anything else.
+fn sanitize_resource_map(raw: &Value) -> Value {
+    const KEYS: [&str; 4] = ["wood", "stone", "metal", "hq"];
+    const MAX_PER_RESOURCE: i64 = 100_000;
+    let mut out = Map::new();
+    for key in KEYS {
+        let qty = raw
+            .get(key)
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, MAX_PER_RESOURCE);
+        out.insert(key.to_string(), json!(qty));
+    }
+    Value::Object(out)
+}
+
 fn normalize_piece(
     piece: &Value,
     self_id: &str,
@@ -296,10 +370,11 @@ fn normalize_piece(
             Value::String(label.chars().take(32).collect()),
         );
     }
-    for field in ["slots", "inv"] {
-        if let Some(value) = source.get(field).filter(|v| v.is_array()) {
-            out.insert(field.into(), value.clone());
-        }
+    if let Some(value) = source.get("slots").filter(|v| v.is_array()) {
+        out.insert("slots".into(), sanitize_item_slots(value, 12));
+    }
+    if let Some(value) = source.get("inv").filter(|v| v.is_object()) {
+        out.insert("inv".into(), sanitize_resource_map(value));
     }
     if matches!(ty, "toolcupboard" | "door") {
         out.insert("auth".into(), sanitized_auth(source.get("auth"), owner_id));
@@ -308,15 +383,15 @@ fn normalize_piece(
     Some((pid, Value::Object(out)))
 }
 
-fn peer_near_piece(peer: &PeerLive, piece: &Value, max_distance: f32) -> bool {
+fn point_near_piece(px: f32, pz: f32, piece: &Value, max_distance: f32) -> bool {
     let ix = piece.get("ix").and_then(Value::as_f64).unwrap_or(0.0);
     let iz = piece.get("iz").and_then(Value::as_f64).unwrap_or(0.0);
     let ox = piece.get("_ox").and_then(Value::as_f64).unwrap_or(0.0);
     let oz = piece.get("_oz").and_then(Value::as_f64).unwrap_or(0.0);
     let x = ix * 3.0 + ox;
     let z = iz * 3.0 + oz;
-    let dx = peer.snap.x as f64 - x;
-    let dz = peer.snap.z as f64 - z;
+    let dx = px as f64 - x;
+    let dz = pz as f64 - z;
     dx * dx + dz * dz <= (max_distance as f64).powi(2)
 }
 
@@ -424,6 +499,15 @@ struct ClientMsg {
     crouching: Option<bool>,
     piece: Option<Value>,
     id: Option<String>,
+    kind: Option<String>,
+    hits: Option<Vec<Value>>,
+}
+
+#[derive(Serialize)]
+struct HpMsg<'a> {
+    t: &'static str,
+    id: &'a str,
+    hp: f64,
 }
 
 #[derive(Serialize)]
@@ -548,6 +632,8 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
                         - Duration::from_millis(PLACE_MIN_INTERVAL_MS as u64),
                     last_remove: Instant::now()
                         - Duration::from_millis(REMOVE_MIN_INTERVAL_MS as u64),
+                    last_explode: Instant::now()
+                        - Duration::from_millis(EXPLODE_MIN_INTERVAL_MS as u64),
                     last_sync: Instant::now() - Duration::from_millis(SYNC_MIN_INTERVAL_MS as u64),
                     last_seen: Instant::now(),
                     has_posed: false,
@@ -714,11 +800,10 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
                     let Some(existing) = room.world.get(&pid) else {
                         continue;
                     };
-                    let owner = existing
-                        .get("ownerId")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if owner != self_id && !peer_near_piece(peer, existing, 10.0) {
+                    // Owner or TC/door `auth` member only — a bare proximity
+                    // check let any stranger within 10m grief pieces they
+                    // didn't build (see roadmap "vectores de trampa").
+                    if !is_authorized_on_piece(existing, &self_id) {
                         continue;
                     }
                     room.world.remove(&pid);
@@ -728,6 +813,99 @@ async fn handle_socket(socket: WebSocket, q: JoinQuery) {
                     room.revision
                 };
                 tokio::spawn(persist_latest_world(seed, save));
+            }
+            "explode" => {
+                // Client-predicted damage from satchel/rocket/C4 (see
+                // `applyExplosion` in `fw-meadow-gpu.js`) is only local
+                // prediction; this is where it becomes authoritative. The
+                // server recomputes HP from `explosives.rs` tables and
+                // broadcasts `hp`/`remove` to every peer (including the
+                // sender) so nobody can see a different wall HP than anyone
+                // else after a raid.
+                let kind = match parsed.kind.as_deref() {
+                    Some("rocket") => "rocket",
+                    Some("c4") => "c4",
+                    _ => "satchel",
+                };
+                let Some(hits) = parsed.hits.as_ref() else {
+                    continue;
+                };
+                let save = {
+                    let mut rooms = ROOMS.lock();
+                    let Some(room) = rooms.get_mut(&seed) else {
+                        continue;
+                    };
+                    let Some(peer) = room.peers.get_mut(&self_id) else {
+                        continue;
+                    };
+                    peer.last_seen = Instant::now();
+                    if peer.last_explode.elapsed().as_millis() < EXPLODE_MIN_INTERVAL_MS {
+                        continue;
+                    }
+                    peer.last_explode = Instant::now();
+                    let (px, pz) = (peer.snap.x, peer.snap.z);
+
+                    let mut outs: Vec<String> = Vec::new();
+                    let mut changed = false;
+                    for hit in hits.iter().take(MAX_EXPLODE_HITS) {
+                        let Some(raw_id) = hit.get("id").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let Some(pid) = sanitize_piece_id(raw_id) else {
+                            continue;
+                        };
+                        let soft = hit.get("soft").and_then(Value::as_bool).unwrap_or(false);
+                        let Some(existing) = room.world.get(&pid) else {
+                            continue;
+                        };
+                        // Bounds the blast to plausible range instead of trusting
+                        // the client's word that a distant piece was hit.
+                        if !point_near_piece(px, pz, existing, 14.0) {
+                            continue;
+                        }
+                        let tier = existing.get("tier").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let max_hp = existing.get("maxHp").and_then(Value::as_f64).unwrap_or(50.0);
+                        let cur_hp = existing.get("hp").and_then(Value::as_f64).unwrap_or(max_hp);
+                        let mut dmg = explosive_hard_damage(kind, tier) as f64;
+                        if soft {
+                            dmg *= crate::explosives::SATCHEL_SOFT_MULT as f64;
+                        }
+                        let new_hp = (cur_hp - dmg).max(0.0);
+                        if new_hp <= 0.0 {
+                            room.world.remove(&pid);
+                            outs.push(json!({ "t": "remove", "id": pid }).to_string());
+                        } else if let Some(piece) = room.world.get_mut(&pid) {
+                            if let Some(obj) = piece.as_object_mut() {
+                                obj.insert("hp".into(), json!(new_hp));
+                            }
+                            outs.push(
+                                serde_json::to_string(&HpMsg {
+                                    t: "hp",
+                                    id: &pid,
+                                    hp: new_hp,
+                                })
+                                .unwrap_or_default(),
+                            );
+                        }
+                        changed = true;
+                    }
+                    // Reconciliation goes to everyone, including the sender:
+                    // the server may disagree with local prediction (e.g. a
+                    // second attacker's hit landed first), so the attacker's
+                    // own client must also converge on the authoritative HP.
+                    for out in &outs {
+                        broadcast(room, "", out);
+                    }
+                    if changed {
+                        room.revision = room.revision.wrapping_add(1);
+                        Some(room.revision)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(revision) = save {
+                    tokio::spawn(persist_latest_world(seed, revision));
+                }
             }
             "pose" => {
                 let mut rooms = ROOMS.lock();
@@ -885,6 +1063,67 @@ mod tests {
         for ty in types {
             assert!(is_allowed_piece_type(ty), "{ty} must be multiplayer-safe");
         }
+    }
+
+    #[test]
+    fn explosive_hard_damage_matches_tables_per_kind() {
+        assert_eq!(
+            explosive_hard_damage("satchel", 0),
+            crate::explosives::satchel_damage_hard(0)
+        );
+        assert_eq!(
+            explosive_hard_damage("rocket", 2),
+            crate::explosives::rocket_damage_hard(2)
+        );
+        assert_eq!(
+            explosive_hard_damage("c4", 4),
+            crate::explosives::c4_damage_hard(4)
+        );
+        // Unknown kinds fall back to satchel rather than panicking.
+        assert_eq!(
+            explosive_hard_damage("bogus", 1),
+            crate::explosives::satchel_damage_hard(1)
+        );
+    }
+
+    #[test]
+    fn authorization_allows_owner_and_auth_members_only() {
+        let piece = json!({
+            "ownerId": "owner-1",
+            "auth": ["owner-1", "friend-2"],
+        });
+        assert!(is_authorized_on_piece(&piece, "owner-1"));
+        assert!(is_authorized_on_piece(&piece, "friend-2"));
+        assert!(!is_authorized_on_piece(&piece, "stranger-3"));
+
+        let no_auth_field = json!({ "ownerId": "owner-1" });
+        assert!(is_authorized_on_piece(&no_auth_field, "owner-1"));
+        assert!(!is_authorized_on_piece(&no_auth_field, "stranger-3"));
+    }
+
+    #[test]
+    fn sanitize_item_slots_drops_unknown_ids_and_clamps_qty() {
+        let raw = json!([
+            { "id": "wood", "qty": 999999999 },
+            { "id": "totally_fake_item", "qty": 5 },
+            null,
+        ]);
+        let out = sanitize_item_slots(&raw, 12);
+        let arr = out.as_array().unwrap();
+        assert_eq!(arr[0]["id"], "wood");
+        assert!(arr[0]["qty"].as_i64().unwrap() <= crate::inventory::STACK_SIZE as i64);
+        assert!(arr[1].is_null());
+        assert!(arr[2].is_null());
+    }
+
+    #[test]
+    fn sanitize_resource_map_clamps_and_restricts_keys() {
+        let raw = json!({ "wood": 999999999, "stone": -5, "evil": 123 });
+        let out = sanitize_resource_map(&raw);
+        assert_eq!(out["wood"], 100_000);
+        assert_eq!(out["stone"], 0);
+        assert_eq!(out["metal"], 0);
+        assert!(out.get("evil").is_none());
     }
 
     #[tokio::test]

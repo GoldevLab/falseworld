@@ -4,10 +4,14 @@ use pages::PagesRegistry;
 use resuma::prelude::*;
 use serde_json::Value;
 
+mod auth;
+mod db;
 mod explosives;
 mod inventory;
 mod multiplayer;
 mod pages;
+mod player_inventory;
+mod player_position;
 mod tool_transforms;
 mod workers;
 
@@ -76,6 +80,32 @@ async fn cancel_meadow_chunk(graph_id: String) -> Result<Value> {
 
 #[layout("/")]
 fn RootLayout() -> View {
+    let req = current_request();
+    let authed = req.as_ref().is_some_and(|r| r.is_authenticated());
+    let username = req
+        .as_ref()
+        .and_then(|r| r.extension("username"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_default();
+
+    // Plain `if`/`else` rather than `<Show when={..}>` — auth state is fixed
+    // for the whole SSR render of this layout (no client-side reactivity
+    // needed here), and `Show`'s `when` wants a `Signal<bool>`/`Computed<bool>`
+    // (`ReactiveBool`), not a plain `bool`.
+    let nav_auth = if authed {
+        view! {
+            <>
+                <span class="fw-user">{username.clone()}</span>
+                <Form submit={crate::auth::logout_submit}>
+                    <button type="submit" class="fw-logout">"Salir"</button>
+                </Form>
+            </>
+        }
+    } else {
+        view! { <NavLink href="/login" activeClass="active">"Entrar"</NavLink> }
+    };
+
     view! {
         <div class="shell">
             <header class="top">
@@ -83,6 +113,7 @@ fn RootLayout() -> View {
                 <nav>
                     <NavLink href="/" activeClass="active">"Meadow"</NavLink>
                     <NavLink href="/about" activeClass="active">"About"</NavLink>
+                    {nav_auth}
                 </nav>
             </header>
             <Slot />
@@ -115,6 +146,13 @@ async fn main() -> std::io::Result<()> {
 
     tool_transforms::init(&public_dir);
 
+    // Turso/libSQL (`db.rs`) backs accounts, sessions, inventory, and pose —
+    // create tables on boot so a fresh `file:data/falseworld.db` (or a brand
+    // new Turso database in prod) is ready before the first request.
+    if let Err(e) = db::init_schema().await {
+        panic!("failed to initialize database schema: {e}");
+    }
+
     FlowApp::new()
         .with_title("False World — Resuma meadow + VRM")
         .with_description(
@@ -123,34 +161,37 @@ async fn main() -> std::io::Result<()> {
         .with_head(CSS)
         .route("/_fw/mp/ws", multiplayer::ws_route())
         .route("/_fw/tool-transforms", tool_transforms::route())
-        // New ids bust Resuma's year-long immutable client cache
+        // Stable ids: `client_asset` records a SHA-256 content digest and
+        // `client_script_url`/`ClientComponent` emit `?v=<hash>`, so browsers
+        // keep `Cache-Control: immutable` correct without manual vN renames
+        // (see resuma CHANGELOG `[Unreleased]` — Client asset cache busting).
         .client_asset(
-            "fw-item-icons-v9",
-            include_bytes!("../static/client/fw-item-icons-v5.js"),
+            "fw-item-icons",
+            include_bytes!("../static/client/fw-item-icons.js"),
         )
         .client_asset(
-            "fw-inventory-v4",
-            include_bytes!("../static/client/fw-inventory-v3.js"),
+            "fw-inventory",
+            include_bytes!("../static/client/fw-inventory.js"),
         )
         .client_asset(
-            "fw-explosives-v2",
-            include_bytes!("../static/client/fw-explosives-v1.js"),
+            "fw-explosives",
+            include_bytes!("../static/client/fw-explosives.js"),
         )
         .client_asset(
-            "fw-progression-v4",
-            include_bytes!("../static/client/fw-progression-v1.js"),
+            "fw-progression",
+            include_bytes!("../static/client/fw-progression.js"),
         )
         .client_asset(
-            "fw-multiplayer-v1",
-            include_bytes!("../static/client/fw-multiplayer-v1.js"),
+            "fw-multiplayer",
+            include_bytes!("../static/client/fw-multiplayer.js"),
         )
         .client_asset(
-            "fw-meadow-gpu-v224",
-            include_bytes!("../static/client/fw-meadow-gpu-v217.js"),
+            "fw-meadow-gpu",
+            include_bytes!("../static/client/fw-meadow-gpu.js"),
         )
         .client_asset(
-            "fw-meadow-vrm-v55",
-            include_bytes!("../static/client/fw-meadow-vrm-v42.js"),
+            "fw-meadow-vrm",
+            include_bytes!("../static/client/fw-meadow-vrm.js"),
         )
         .with_public_dir(public_dir)
         .without_pwa()

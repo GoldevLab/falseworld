@@ -9,7 +9,7 @@ mod noise;
 mod pcg;
 mod terrain;
 
-pub use biome::{biome_at, coast_radius, snow_weight, Biome, CENTER_MTN_R, ISLAND_HALF};
+pub use biome::{biome_at, coast_radius, island_edge, snow_weight, Biome, CENTER_MTN_R, ISLAND_HALF};
 pub use codec::{decode_chunk, encode_chunk, CONTENT_TYPE};
 pub use grass::{BladePacked, GrassParams};
 pub use terrain::{

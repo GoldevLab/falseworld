@@ -19,10 +19,12 @@ pub struct EngineFeatures {
 }
 
 impl EngineFeatures {
-    /// Safe defaults for the current stress-test binary.
+    /// Safe defaults for the current stress-test binary. `shadows` is on by
+    /// default now that `main.rs` renders a real (single-cascade) shadow
+    /// map — see `ENGINE.md` progress table.
     pub fn preview() -> Self {
         Self {
-            shadows: false,
+            shadows: true,
             celestial: true,
             mesh_shaders: false,
             ray_query: false,
@@ -35,7 +37,7 @@ impl EngineFeatures {
         Self {
             shadows: true,
             celestial: true,
-            mesh_shaders: false, // on after mesh trees
+            mesh_shaders: false, // on after tree meshes get BLAS-friendly LOD
             ray_query: false,    // on after BLAS trees
             hdr_surface: true,
         }

@@ -2,6 +2,8 @@
 
 pub mod about;
 pub mod index;
+pub mod login;
+pub mod register;
 
 mod _registry;
 pub use _registry::PagesRegistry;

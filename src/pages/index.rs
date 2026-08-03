@@ -59,6 +59,58 @@ pub fn page(_req: FlowRequest) -> View {
                 window.__fw.playerId = window.__fw.playerId || "local";
             }
 
+            let persistInvTimer = 0;
+            function schedulePersistInventory(payload) {
+                // Debounced: drag/craft/quick-move can fire onSync several times
+                // per second, and every save is a full-file rewrite server-side.
+                if (persistInvTimer) clearTimeout(persistInvTimer);
+                persistInvTimer = setTimeout(() => {
+                    persistInvTimer = 0;
+                    if (!payload) return;
+                    // Server resolves the account from the session cookie.
+                    __resuma.action("save_player_inventory", [
+                        String(payload.backpackJson || "[]"),
+                        String(payload.hotbarJson || "[]"),
+                        Number(payload.activeSlot) || 0,
+                        String(payload.heldId || ""),
+                    ]).catch(() => {});
+                }, 800);
+            }
+
+            // Last world pose → Turso so reconnect spawns where you left.
+            let persistPoseTimer = 0;
+            let posePersistArmed = false;
+            function flushPlayerPosition() {
+                if (!api) return;
+                let pose = null;
+                try {
+                    pose = typeof api.getFeetPose === "function"
+                        ? api.getFeetPose()
+                        : (typeof api.getPose === "function" ? api.getPose() : null);
+                } catch (_) { return; }
+                if (!pose || !Number.isFinite(+pose.x) || !Number.isFinite(+pose.z)) return;
+                __resuma.action("save_player_position", [
+                    Number(pose.x) || 0,
+                    Number(pose.y) || 0,
+                    Number(pose.z) || 0,
+                    Number(pose.yaw) || 0,
+                ]).catch(() => {});
+            }
+            function schedulePersistPosition() {
+                if (!posePersistArmed) return;
+                if (persistPoseTimer) clearTimeout(persistPoseTimer);
+                persistPoseTimer = setTimeout(() => {
+                    persistPoseTimer = 0;
+                    flushPlayerPosition();
+                }, 1200);
+            }
+            function onPoseLifecycle() {
+                if (document.visibilityState === "hidden") flushPlayerPosition();
+                else schedulePersistPosition();
+            }
+            document.addEventListener("visibilitychange", onPoseLifecycle);
+            window.addEventListener("pagehide", flushPlayerPosition);
+
             function syncInvToResuma(payload) {
                 if (!alive || !payload) return;
                 state.backpack_json.set(String(payload.backpackJson || "[]"));
@@ -66,6 +118,7 @@ pub fn page(_req: FlowRequest) -> View {
                 state.hotbar_active.set(Number(payload.activeSlot) || 0);
                 state.held_label.set(String(payload.heldLabel || "vacío"));
                 state.held_id.set(String(payload.heldId || ""));
+                schedulePersistInventory(payload);
             }
 
             function notifyHeld(held) {
@@ -107,6 +160,7 @@ pub fn page(_req: FlowRequest) -> View {
                 }
 
                 state.unlocked.set("1");
+                try { flushPlayerPosition(); } catch (_) {}
                 try {
                     if (vrmApi && typeof vrmApi.setPlayable === "function") vrmApi.setPlayable(true);
                 } catch (_) {}
@@ -164,6 +218,8 @@ pub fn page(_req: FlowRequest) -> View {
                                         api.applyRemotePlace(msg.piece);
                                     } else if (msg.t === "remove" && typeof api.applyRemoteRemove === "function") {
                                         api.applyRemoteRemove(msg.id);
+                                    } else if (msg.t === "hp" && typeof api.applyRemoteHp === "function") {
+                                        api.applyRemoteHp(msg.id, msg.hp);
                                     }
                                 } catch (e) { console.warn("[FW world]", e); }
                             },
@@ -292,14 +348,47 @@ pub fn page(_req: FlowRequest) -> View {
                         await window.FalseWorldItemIcons.ready();
                     }
                 } catch (_) {}
+                // Returning players resume their saved backpack/hotbar instead of
+                // the debug starter stash baked into the SSR mirror attributes.
+                let savedInv = null;
+                let savedPose = null;
+                try {
+                    // No arg: the server reads the logged-in user from the
+                    // session cookie (`auth.rs`), not a client-supplied id —
+                    // logged-out visitors never reach this page (redirected
+                    // to /login), so this always resolves a real account.
+                    const loaded = await __resuma.action("load_player_inventory", []);
+                    if (loaded && loaded.found) savedInv = loaded;
+                } catch (_) {}
+                try {
+                    const loadedPose = await __resuma.action("load_player_position", []);
+                    if (
+                        loadedPose && loadedPose.found &&
+                        Number.isFinite(+loadedPose.x) &&
+                        Number.isFinite(+loadedPose.z)
+                    ) {
+                        savedPose = {
+                            x: +loadedPose.x,
+                            y: Number.isFinite(+loadedPose.y) ? +loadedPose.y : 0,
+                            z: +loadedPose.z,
+                            yaw: Number.isFinite(+loadedPose.yaw) ? +loadedPose.yaw : 0,
+                        };
+                    }
+                } catch (_) {}
                 for (let i = 0; i < 80 && !window.FalseWorldInv; i++) await sleep(40);
                 if (window.FalseWorldInv) {
                     const stage = document.querySelector(".stage") || document.body;
                     const mirror = document.querySelector(".fw-inv-mirror");
                     invApi = window.FalseWorldInv.create(stage, {
-                        backpackJson: (mirror && mirror.getAttribute("data-backpack")) || "[]",
-                        hotbarJson: (mirror && mirror.getAttribute("data-hotbar")) || "[]",
-                        activeSlot: Number((mirror && mirror.getAttribute("data-active")) || 0),
+                        backpackJson: savedInv
+                            ? savedInv.backpackJson
+                            : (mirror && mirror.getAttribute("data-backpack")) || "[]",
+                        hotbarJson: savedInv
+                            ? savedInv.hotbarJson
+                            : (mirror && mirror.getAttribute("data-hotbar")) || "[]",
+                        activeSlot: savedInv
+                            ? Number(savedInv.activeSlot) || 0
+                            : Number((mirror && mirror.getAttribute("data-active")) || 0),
                         onSync: syncInvToResuma,
                         onActiveChange: (held) => {
                             // setHeldItem owns build/deploy ghost state. Do NOT call
@@ -381,6 +470,8 @@ pub fn page(_req: FlowRequest) -> View {
                         countOf: (id) => invApi.countOf(id),
                         getActive: () => invApi.getActive(),
                     } : null,
+                    // Feet pose from last disconnect; terrain snap in boot() still applies.
+                    initialPose: savedPose || null,
                 });
                 api.setControlsEnabled(false);
                 if (typeof api.setPaused === "function") api.setPaused(true);
@@ -389,6 +480,16 @@ pub fn page(_req: FlowRequest) -> View {
                         (vrmApi && typeof vrmApi.getAtlas === "function") ? vrmApi.getAtlas() : null
                     );
                 }
+                try {
+                    window.__fw = window.__fw || {};
+                    window.__fw.api = api;
+                    if (typeof api.getVitals === "function") {
+                        window.__fw.getVitals = () => api.getVitals();
+                    }
+                    if (typeof api.playUiSfx === "function") {
+                        window.__fw.playUi = (k) => api.playUiSfx(k);
+                    }
+                } catch (_) {}
                 if (invApi) notifyHeld(invApi.getActive());
 
                 setPct(55, "Cargando… prado", "load");
@@ -396,6 +497,12 @@ pub fn page(_req: FlowRequest) -> View {
                 if (typeof api.calibrate === "function") await api.calibrate(3);
                 setPct(99, "Calibrando…", "cal");
                 armStart();
+                // Persist pose once playable; interval covers idle AFK tabs too.
+                posePersistArmed = true;
+                setInterval(() => {
+                    if (!alive || !started || !posePersistArmed) return;
+                    flushPlayerPosition();
+                }, 15000);
 
             } catch (e) {
                 console.error("[FW init]", e);
@@ -415,6 +522,13 @@ pub fn page(_req: FlowRequest) -> View {
 
             return () => {
                 alive = false;
+                posePersistArmed = false;
+                if (persistPoseTimer) clearTimeout(persistPoseTimer);
+                try { flushPlayerPosition(); } catch (_) {}
+                try {
+                    document.removeEventListener("visibilitychange", onPoseLifecycle);
+                    window.removeEventListener("pagehide", flushPlayerPosition);
+                } catch (_) {}
                 try { mpApi && mpApi.destroy(); } catch (_) {}
                 try { invApi && invApi.destroy(); } catch (_) {}
                 try { vrmApi && vrmApi.destroy(); } catch (_) {}
@@ -438,37 +552,37 @@ pub fn page(_req: FlowRequest) -> View {
         <div class="stage" data-unlocked={unlocked}>
             <div class="viewport">
                 {client_component(
-                    ClientComponent::new("fw-item-icons-v9")
+                    ClientComponent::new("fw-item-icons")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-inventory-v4")
+                    ClientComponent::new("fw-inventory")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-explosives-v2")
+                    ClientComponent::new("fw-explosives")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-progression-v4")
+                    ClientComponent::new("fw-progression")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-multiplayer-v1")
+                    ClientComponent::new("fw-multiplayer")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-gpu-v224")
+                    ClientComponent::new("fw-meadow-gpu")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
                 {client_component(
-                    ClientComponent::new("fw-meadow-vrm-v55")
+                    ClientComponent::new("fw-meadow-vrm")
                         .class("fw-boot")
                         .aria_hidden(true)
                 )}
